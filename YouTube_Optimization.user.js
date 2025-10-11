@@ -4,8 +4,8 @@
 // @version      1.0.4
 // @match        *://www.youtube.com/*
 // @grant        GM_registerMenuCommand
-// @updateURL    https://raw.githubusercontent.com/Yinengjun/MiniJS/refs/heads/main/YouTube_Optimization.user.js
-// @downloadURL  https://raw.githubusercontent.com/Yinengjun/MiniJS/refs/heads/main/YouTube_Optimization.user.js
+// @updateURL    https://raw.githubusercontent.com/Yinengjun/YouTube_Optimization/refs/heads/main/YouTube_Optimization.user.js
+// @downloadURL  https://raw.githubusercontent.com/Yinengjun/YouTube_Optimization/refs/heads/main/YouTube_Optimization.user.js
 // ==/UserScript==
 
 (function () {
