@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube 优化
 // @description  自动设置 YouTube 视频分辨率、播放速度，添加网页全屏功能，整合到控制面板，支持自动隐藏与收起。
-// @version      1.0.4
+// @version      1.0.5
 // @match        *://www.youtube.com/*
 // @grant        GM_registerMenuCommand
 // @updateURL    https://raw.githubusercontent.com/Yinengjun/YouTube_Optimization/refs/heads/main/YouTube_Optimization.user.js
@@ -296,6 +296,7 @@
             enabled: localStorage.getItem('yt-filter-enabled') === 'true',
             filterHome: localStorage.getItem('yt-filter-home') === 'true',
             filterRelated: localStorage.getItem('yt-filter-related') === 'true',
+            filterMembersOnly: localStorage.getItem('yt-filter-members-only') === 'true',
             filterKeywords: localStorage.getItem('yt-filter-keywords') === 'true',
             filterProgress: localStorage.getItem('yt-filter-progress') === 'true',
             progressThreshold: parseInt(localStorage.getItem('yt-filter-progress-threshold')) || 90,
@@ -386,6 +387,21 @@
                 // 获取视频标题元素
                 const title = item.querySelector('h3[title]')?.getAttribute('title')?.trim() || '';
 
+                // 检查是否为会员专享视频
+                let isMembersOnly = false;
+                if (settings.filterMembersOnly) {
+                    const badges = item.querySelectorAll('ytd-badge-supported-renderer .yt-badge-shape__text');
+                    for (const badge of badges) {
+                        if (badge.textContent.trim() === '会员专享') {
+                            isMembersOnly = true;
+                            break;
+                        }
+                    }
+                }
+                if (isMembersOnly) {
+                    console.log(`${title}\n[检测为会员专享视频] -> 已过滤`);
+                }
+
                 // 获取该视频的观看进度百分比（自定义函数 getPlayedPercentage）
                 const playedPercent = getPlayedPercentage(item);
 
@@ -411,7 +427,7 @@
                 }
 
                 // 如果符合任何一个过滤条件，就隐藏该视频项
-                if (matchedByKeyword || matchedByPlayed || matchedByPublishTime) {
+                if (isMembersOnly || matchedByKeyword || matchedByPlayed || matchedByPublishTime) {
                     // 隐藏视频项
                     item.style.display = 'none';
                     // 标记为已过滤，避免重复处理
@@ -898,6 +914,7 @@
                 filterSettings.appendChild(createToggle('过滤功能总开关', 'yt-filter-enabled'));
                 filterSettings.appendChild(createToggle('过滤首页推荐', 'yt-filter-home'));
                 filterSettings.appendChild(createToggle('过滤视频页相关推荐', 'yt-filter-related'));
+                filterSettings.appendChild(createToggle('过滤会员专享视频', 'yt-filter-members-only'));
                 filterSettings.appendChild(createToggle('关键词过滤', 'yt-filter-keywords'));
 
                 // 关键词部分
@@ -1045,7 +1062,7 @@
                 publishTimeInputLine.appendChild(publishTimeInput);
                 publishTimeInputLine.appendChild(monthsSign);
 
-                filterSettings.appendChild(publishTimeInputLine); 
+                filterSettings.appendChild(publishTimeInputLine);
             }
 
             if (tab === '界面') {
