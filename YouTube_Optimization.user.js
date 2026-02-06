@@ -1,11 +1,11 @@
 // ==UserScript==
 // @name         YouTube 优化
 // @description  自动设置 YouTube 视频分辨率、播放速度，添加网页全屏功能，整合到控制面板，支持自动隐藏与收起。
-// @version      1.0.5
+// @version      1.0.6
 // @match        *://www.youtube.com/*
 // @grant        GM_registerMenuCommand
-// @updateURL    https://raw.githubusercontent.com/Yinengjun/YouTube_Optimization/refs/heads/main/YouTube_Optimization.user.js
-// @downloadURL  https://raw.githubusercontent.com/Yinengjun/YouTube_Optimization/refs/heads/main/YouTube_Optimization.user.js
+// @updateURL    https://ba.sh/A6Ms
+// @downloadURL  https://ba.sh/A6Ms
 // ==/UserScript==
 
 (function () {
@@ -89,7 +89,10 @@
     // 切换网页全屏
     function toggleWebFullscreen() {
         const player = document.querySelector('.html5-video-player');
-        if (!player) return;
+        const playerContainer = document.querySelector('#player-container');
+        const fullBleedContainer = document.querySelector('#full-bleed-container');
+        
+        if (!player || !playerContainer) return;
 
         const bgId = 'webfullscreen-bg';
         let bg = document.getElementById(bgId);
@@ -108,34 +111,74 @@
             // 保存原始样式
             playerOriginalStyle = player.getAttribute('style') || '';
 
-            // 铺满窗口
-            player.style.position = 'fixed';
-            player.style.top = 0;
-            player.style.left = 0;
-            player.style.width = '100vw';
-            player.style.height = '100vh';
-            player.style.zIndex = 9998;
-            document.body.style.overflow = 'hidden';
-
+            // 创建背景
             if (!bg) {
-            bg = document.createElement('div');
-            bg.id = bgId;
-            bg.style.position = 'fixed';
-            bg.style.top = 0;
-            bg.style.left = 0;
-            bg.style.width = '100vw';
-            bg.style.height = '100vh';
-            bg.style.zIndex = 9997;
-            bg.style.backgroundColor = getYouTubeTheme() === 'dark' ? '#0f0f0f' : '#f9f9f9';
-            document.body.appendChild(bg);
+                bg = document.createElement('div');
+                bg.id = bgId;
+                bg.style.cssText = `
+                    position: fixed;
+                    top: 0;
+                    left: 0;
+                    width: 100vw;
+                    height: 100vh;
+                    z-index: 9997;
+                    background-color: ${getYouTubeTheme() === 'dark' ? '#0f0f0f' : '#f9f9f9'};
+                `;
+                document.body.appendChild(bg);
             }
-            window.dispatchEvent(new Event('resize'));
+
+            // 设置主容器样式
+            if (fullBleedContainer) {
+                fullBleedContainer.style.cssText = `
+                    position: fixed !important;
+                    top: 0 !important;
+                    left: 0 !important;
+                    width: 100vw !important;
+                    height: 100vh !important;
+                    z-index: 9998 !important;
+                `;
+            }
+
+            // 设置播放器容器样式
+            playerContainer.style.cssText = `
+                position: fixed !important;
+                top: 0 !important;
+                left: 0 !important;
+                width: 100vw !important;
+                height: 100vh !important;
+                z-index: 9999 !important;
+            `;
+
+            // 设置播放器样式
+            player.style.cssText = `
+                position: absolute !important;
+                top: 0 !important;
+                left: 0 !important;
+                width: 100% !important;
+                height: 100% !important;
+            `;
+
+            document.body.style.overflow = 'hidden';
+            
+            // 触发resize让YouTube重新计算播放器尺寸
+            setTimeout(() => {
+                window.dispatchEvent(new Event('resize'));
+            }, 100);
         } else {
             // 退出网页全屏：恢复进入前的影院/默认视图状态
             setTheaterMode(player.dataset.wasTheater === 'true');
             player.dataset.wasTheater = ''; // 清空标记，避免跨页面污染
 
-            // 恢复原始样式
+            // 恢复所有容器的样式
+            if (fullBleedContainer) {
+                fullBleedContainer.style.cssText = '';
+            }
+            
+            if (playerContainer) {
+                playerContainer.style.cssText = '';
+            }
+
+            // 恢复播放器原始样式
             if (playerOriginalStyle) {
             player.setAttribute('style', playerOriginalStyle);
             } else {
@@ -144,7 +187,11 @@
 
             document.body.style.overflow = '';
             if (bg) bg.remove();
-            window.dispatchEvent(new Event('resize'));
+            
+            // 触发resize让YouTube重新计算布局
+            setTimeout(() => {
+                window.dispatchEvent(new Event('resize'));
+            }, 100);
         }
     }
 
