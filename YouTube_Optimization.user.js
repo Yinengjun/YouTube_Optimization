@@ -824,6 +824,7 @@
 
         let hideTimer;
         const show = () => {
+            if (!document.body.contains(container)) return;
             container.style.opacity = '1';
             if (hideTimer) clearTimeout(hideTimer);
             hideTimer = setTimeout(() => {
@@ -833,8 +834,8 @@
             }, 3000);
         };
 
-        document.addEventListener('mousemove', show);
-        document.addEventListener('keydown', show);
+        document.addEventListener('mousemove', show, { passive: true });
+        document.addEventListener('keydown', show, { passive: true });
         show();
         applyFloatStyle();
     }
