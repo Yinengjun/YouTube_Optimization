@@ -133,7 +133,7 @@
             .yt-tab-header { background: var(--yt-tab-bg) !important; border-bottom: 1px solid var(--yt-border) !important; }
             .yt-tab-header button { color: var(--yt-dialog-text) !important; }
             .yt-panel { background: var(--yt-panel-bg) !important; box-shadow: 0 0 5px var(--yt-panel-shadow) !important; }
-            .yt-panel select { background: var(--yt-input-bg) !important; color: var(--yt-input-text) !important; border-color: var(--yt-input-border) !important; }
+            .yt-panel select { background: var(--yt-input-bg) !important; color: var(--yt-input-text) !important; border-color: var(--yt-input-border) !important; border-radius: 4px !important; padding: 2px 4px !important; }
             .yt-panel label { color: var(--yt-input-text) !important; }
             .yt-panel .yt-right-border { border-left: 1px solid var(--yt-right-border) !important; }
             .yt-panel .yt-right-border.yt-border-collapsed { border-left: none !important; }
