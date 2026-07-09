@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube 优化
 // @description  自动设置 YouTube 视频分辨率、播放速度，添加网页全屏功能，整合到控制面板，支持自动隐藏与收起。
-// @version      1.0.6
+// @version      1.0.7
 // @match        *://www.youtube.com/*
 // @grant        GM_registerMenuCommand
 // @updateURL    https://ba.sh/A6Ms
@@ -33,6 +33,8 @@
     const STORAGE_KEY_COLUMNS = 'yt_home_columns';
     const STORAGE_KEY_ENABLED = 'yt_home_columns_enabled';  
     const STORAGE_KEY_SLIDER_VISIBLE = 'yt_home_slider_visible';
+    const THEME_STORAGE_KEY = 'yt-theme-mode';
+    const FLOAT_STYLE_KEY = 'yt-float-style';
     const minColumns = 3;
     const maxColumns = 8;
 
@@ -61,6 +63,113 @@
                        document.documentElement.getAttribute('dark') === 'true' ||
                        document.documentElement.classList.contains('dark');
         return isDark ? 'dark' : 'light';
+    }
+
+    // 获取有效主题（根据设置）
+    function getEffectiveTheme() {
+        const mode = localStorage.getItem(THEME_STORAGE_KEY) || 'youtube';
+        switch (mode) {
+            case 'dark': return 'dark';
+            case 'light': return 'light';
+            case 'system': return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            default: return getYouTubeTheme();
+        }
+    }
+
+    // 初始化脚本 UI 主题样式
+    function initThemeStyle() {
+        if (document.getElementById('yt-theme-style')) return;
+        const style = document.createElement('style');
+        style.id = 'yt-theme-style';
+        style.textContent = `
+            :root {
+                --yt-overlay: rgba(0,0,0,0.4);
+                --yt-dialog-bg: #ffffff;
+                --yt-dialog-text: #333333;
+                --yt-dialog-shadow: rgba(0,0,0,0.25);
+                --yt-close-color: #999;
+                --yt-tab-bg: #f8f8f8;
+                --yt-border: #ddd;
+                --yt-border-light: #ccc;
+                --yt-note-color: #666;
+                --yt-note-secondary: #888;
+                --yt-chip-bg: #eee;
+                --yt-danger: #c00;
+                --yt-panel-bg: rgba(255,255,255,0.95);
+                --yt-panel-shadow: rgba(0,0,0,0.2);
+                --yt-input-bg: #ffffff;
+                --yt-input-text: #333333;
+                --yt-input-border: #ddd;
+                --yt-accent: #2196f3;
+                --yt-right-border: #aaa;
+            }
+            [data-yt-ui-theme="dark"] {
+                --yt-overlay: rgba(0,0,0,0.6);
+                --yt-dialog-bg: #1e1e1e;
+                --yt-dialog-text: #e0e0e0;
+                --yt-dialog-shadow: rgba(0,0,0,0.5);
+                --yt-close-color: #aaa;
+                --yt-tab-bg: #2a2a2a;
+                --yt-border: #444;
+                --yt-border-light: #555;
+                --yt-note-color: #aaa;
+                --yt-note-secondary: #888;
+                --yt-chip-bg: #3a3a3a;
+                --yt-danger: #ff4444;
+                --yt-panel-bg: rgba(30,30,30,0.95);
+                --yt-panel-shadow: rgba(0,0,0,0.4);
+                --yt-input-bg: #2a2a2a;
+                --yt-input-text: #e0e0e0;
+                --yt-input-border: #555;
+                --yt-accent: #64b5f6;
+                --yt-right-border: #666;
+            }
+            #yt-settings-modal { background: var(--yt-overlay) !important; }
+            .yt-dialog { background: var(--yt-dialog-bg) !important; color: var(--yt-dialog-text) !important; box-shadow: 0 4px 12px var(--yt-dialog-shadow) !important; }
+            .yt-dialog select, .yt-dialog input[type="text"], .yt-dialog input[type="number"] { background: var(--yt-input-bg) !important; color: var(--yt-input-text) !important; border-color: var(--yt-input-border) !important; }
+            .yt-dialog label { color: var(--yt-dialog-text) !important; }
+            .yt-dialog div[style*="font-size: 12px"] { color: var(--yt-note-color) !important; }
+            .yt-close-btn { color: var(--yt-close-color) !important; }
+            .yt-tab-header { background: var(--yt-tab-bg) !important; border-bottom: 1px solid var(--yt-border) !important; }
+            .yt-tab-header button { color: var(--yt-dialog-text) !important; }
+            .yt-panel { background: var(--yt-panel-bg) !important; box-shadow: 0 0 5px var(--yt-panel-shadow) !important; }
+            .yt-panel select { background: var(--yt-input-bg) !important; color: var(--yt-input-text) !important; border-color: var(--yt-input-border) !important; }
+            .yt-panel label { color: var(--yt-input-text) !important; }
+            .yt-panel .yt-right-border { border-left: 1px solid var(--yt-right-border) !important; }
+            .yt-panel .yt-right-border.yt-border-collapsed { border-left: none !important; }
+            .keyword-chip { background: var(--yt-chip-bg) !important; }
+            .keyword-chip span:last-child { color: var(--yt-danger) !important; }
+            .yt-keyword-box { border-color: var(--yt-border-light) !important; }
+            .yt-keyword-box input[type="text"] { border: none !important; outline: none !important; background: transparent !important; color: inherit !important; }
+        `;
+        document.head.appendChild(style);
+    }
+
+    // 应用主题
+    function applyTheme() {
+        const mode = localStorage.getItem(THEME_STORAGE_KEY) || 'youtube';
+        const theme = getEffectiveTheme();
+        const html = document.documentElement;
+        if (theme === 'dark') {
+            html.setAttribute('data-yt-ui-theme', 'dark');
+        } else {
+            html.removeAttribute('data-yt-ui-theme');
+        }
+    }
+
+    // 监听系统主题变化
+    let systemThemeMediaQuery = null;
+    function onSystemThemeChange() {
+        if (localStorage.getItem(THEME_STORAGE_KEY) === 'system') {
+            applyTheme();
+        }
+    }
+    function watchSystemTheme() {
+        if (systemThemeMediaQuery) {
+            systemThemeMediaQuery.removeEventListener('change', onSystemThemeChange);
+        }
+        systemThemeMediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+        systemThemeMediaQuery.addEventListener('change', onSystemThemeChange);
     }
 
     // 获取 watch-flexy 元素
@@ -593,6 +702,7 @@
 
         const container = document.createElement('div');
         container.id = 'yt-settings-container';
+        container.className = 'yt-panel';
         container.style.cssText = `
             position: fixed; top: 10px; right: 0; z-index: 9999;
             background: rgba(255,255,255,0.95); border-radius: 10px 0 0 10px;
@@ -611,6 +721,7 @@
         `;
 
         const qualityLabel = document.createElement('label');
+        qualityLabel.id = 'yt-float-quality-label';
         qualityLabel.innerText = '画质：';
         const qualitySelect = document.createElement('select');
         for (const key in qualityMap) {
@@ -627,6 +738,7 @@
         };
 
         const speedLabel = document.createElement('label');
+        speedLabel.id = 'yt-float-speed-label';
         speedLabel.innerText = '倍速：';
         const speedSelect = document.createElement('select');
         for (const s of speedOptions) {
@@ -643,6 +755,7 @@
         };
 
         const fsButton = document.createElement('button');
+        fsButton.id = 'yt-float-fs-btn';
         fsButton.textContent = '网页全屏';
         fsButton.style.cssText = `
             padding: 3px 6px; font-size: 12px; background: #ff5c5c; color: white;
@@ -651,12 +764,12 @@
         fsButton.onclick = toggleWebFullscreen;
 
         const rightControls = document.createElement('div');
+        rightControls.className = 'yt-right-border';
         rightControls.style.cssText = `
             display: flex;
             align-items: center;
             justify-content: center;
             padding: 0 6px;
-            border-left: 1px solid #aaa;
             background: transparent;
             transition: all 0.3s;
         `;
@@ -676,7 +789,7 @@
             toggleBtn.textContent = collapsed ? '◀' : '▶';
             toggleBtn.title = collapsed ? '展开面板' : '收起面板';
 
-            rightControls.style.borderLeft = collapsed ? 'none' : '1px solid #aaa';
+            rightControls.classList.toggle('yt-border-collapsed', collapsed);
             rightControls.style.padding = collapsed ? '0 4px' : '0 6px';
         };
 
@@ -706,6 +819,33 @@
         document.addEventListener('mousemove', show);
         document.addEventListener('keydown', show);
         show();
+        applyFloatStyle();
+    }
+
+    // 应用浮动条样式
+    function applyFloatStyle() {
+        const style = localStorage.getItem(FLOAT_STYLE_KEY) || 'full';
+        const labelQ = document.getElementById('yt-float-quality-label');
+        const labelS = document.getElementById('yt-float-speed-label');
+        const btn = document.getElementById('yt-float-fs-btn');
+        if (!labelQ || !labelS || !btn) return;
+        if (style === 'mini') {
+            labelQ.style.display = 'none';
+            labelS.style.display = 'none';
+            btn.textContent = '⛶';
+            btn.style.cssText = `
+                padding: 2px 5px; font-size: 14px; background: #ff5c5c; color: white;
+                border: none; border-radius: 4px; cursor: pointer; line-height: 1;
+            `;
+        } else {
+            labelQ.style.display = '';
+            labelS.style.display = '';
+            btn.textContent = '网页全屏';
+            btn.style.cssText = `
+                padding: 3px 6px; font-size: 12px; background: #ff5c5c; color: white;
+                border: none; border-radius: 4px; cursor: pointer;
+            `;
+        }
     }
 
     // 设置界面
@@ -725,6 +865,7 @@
         `;
 
         const dialog = document.createElement('div');
+        dialog.className = 'yt-dialog';
         dialog.style.cssText = `
             width: 500px; max-width: 90%;
             background: #fff;
@@ -739,6 +880,7 @@
 
         // 添加关闭按钮 X
         const closeX = document.createElement('button');
+        closeX.className = 'yt-close-btn';
         closeX.textContent = '×';
         closeX.style.cssText = `
             position: absolute;
@@ -757,6 +899,7 @@
 
         // Tab Header
         const tabHeader = document.createElement('div');
+        tabHeader.className = 'yt-tab-header';
         tabHeader.style.cssText = `
             display: flex;
             border-bottom: 1px solid #ddd;
@@ -969,6 +1112,7 @@
                 keywordLabel.textContent = '屏蔽词（回车添加，点击删除）：';
 
                 const keywordBox = document.createElement('div');
+                keywordBox.className = 'yt-keyword-box';
                 keywordBox.style.cssText = `
                     display: flex; flex-wrap: wrap; gap: 6px;
                     border: 1px solid #ccc; padding: 6px; border-radius: 4px;
@@ -1113,6 +1257,108 @@
             }
 
             if (tab === '界面') {
+                // ===== 脚本设置 =====
+                const scriptSection = document.createElement('div');
+                scriptSection.style.marginBottom = '20px';
+                scriptSection.style.paddingBottom = '15px';
+                scriptSection.style.borderBottom = '1px solid #444';
+
+                const scriptTitle = document.createElement('div');
+                scriptTitle.textContent = '脚本';
+                scriptTitle.style.cssText = 'font-weight: bold; margin-bottom: 12px; font-size: 15px;';
+
+                // 深浅色模式
+                const themeMode = localStorage.getItem(THEME_STORAGE_KEY) || 'youtube';
+                const themeLabel = document.createElement('div');
+                themeLabel.textContent = '深浅色模式';
+                themeLabel.style.cssText = 'font-weight: bold; margin-bottom: 10px;';
+
+                const themeOptions = [
+                    { value: 'system', label: '系统' },
+                    { value: 'youtube', label: '同步YouTube' },
+                    { value: 'dark', label: '深色' },
+                    { value: 'light', label: '浅色' }
+                ];
+
+                const themeContainer = document.createElement('div');
+                themeContainer.style.cssText = 'display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 15px;';
+
+                themeOptions.forEach(opt => {
+                    const label = document.createElement('label');
+                    label.style.cssText = 'display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 13px;';
+
+                    const radio = document.createElement('input');
+                    radio.type = 'radio';
+                    radio.name = 'yt-theme-radio';
+                    radio.value = opt.value;
+                    radio.checked = themeMode === opt.value;
+
+                    radio.addEventListener('change', () => {
+                        if (radio.checked) {
+                            localStorage.setItem(THEME_STORAGE_KEY, opt.value);
+                            applyTheme();
+                            if (opt.value === 'system') {
+                                watchSystemTheme();
+                            }
+                        }
+                    });
+
+                    label.appendChild(radio);
+                    label.appendChild(document.createTextNode(opt.label));
+                    themeContainer.appendChild(label);
+                });
+
+                // 浮动条样式
+                const floatStyle = localStorage.getItem(FLOAT_STYLE_KEY) || 'full';
+                const floatLabel = document.createElement('div');
+                floatLabel.textContent = '浮动条样式';
+                floatLabel.style.cssText = 'font-weight: bold; margin-bottom: 10px;';
+
+                const floatContainer = document.createElement('div');
+                floatContainer.style.cssText = 'display: flex; flex-wrap: wrap; gap: 12px;';
+
+                const floatOptions = [
+                    { value: 'full', label: '完整' },
+                    { value: 'mini', label: '迷你' }
+                ];
+
+                floatOptions.forEach(opt => {
+                    const label = document.createElement('label');
+                    label.style.cssText = 'display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 13px;';
+
+                    const radio = document.createElement('input');
+                    radio.type = 'radio';
+                    radio.name = 'yt-float-radio';
+                    radio.value = opt.value;
+                    radio.checked = floatStyle === opt.value;
+
+                    radio.addEventListener('change', () => {
+                        if (radio.checked) {
+                            localStorage.setItem(FLOAT_STYLE_KEY, opt.value);
+                            applyFloatStyle();
+                        }
+                    });
+
+                    label.appendChild(radio);
+                    label.appendChild(document.createTextNode(opt.label));
+                    floatContainer.appendChild(label);
+                });
+
+                scriptSection.appendChild(scriptTitle);
+                scriptSection.appendChild(themeLabel);
+                scriptSection.appendChild(themeContainer);
+                scriptSection.appendChild(floatLabel);
+                scriptSection.appendChild(floatContainer);
+                content.appendChild(scriptSection);
+
+                // ===== YouTube 设置 =====
+                const ytSection = document.createElement('div');
+
+                const ytTitle = document.createElement('div');
+                ytTitle.textContent = 'YouTube';
+                ytTitle.style.cssText = 'font-weight: bold; margin-bottom: 12px; font-size: 15px;';
+                ytSection.appendChild(ytTitle);
+
                 // 读取配置
                 const columnsEnabled = localStorage.getItem(STORAGE_KEY_ENABLED) === 'true';
                 const sliderVisibleOnPage = localStorage.getItem(STORAGE_KEY_SLIDER_VISIBLE) !== 'false'; // 默认true
@@ -1212,12 +1458,13 @@
                 });
 
                 // 依次追加元素到设置面板content
-                content.appendChild(enableLabel);
-                content.appendChild(cssNote);
-                content.appendChild(sliderVisibleLabel);
-                content.appendChild(sliderVisibleNote);
-                content.appendChild(columnsLabel);
-                content.appendChild(columnsContainer);
+                ytSection.appendChild(enableLabel);
+                ytSection.appendChild(cssNote);
+                ytSection.appendChild(sliderVisibleLabel);
+                ytSection.appendChild(sliderVisibleNote);
+                ytSection.appendChild(columnsLabel);
+                ytSection.appendChild(columnsContainer);
+                content.appendChild(ytSection);
             }
 
             if (tab === '快捷键') {
@@ -1327,7 +1574,7 @@
         // 切换标签
         function switchTab(tab) {
             tabs.forEach(t => {
-                tabButtons[t].style.borderBottom = t === tab ? '2px solid #2196f3' : '2px solid transparent';
+                tabButtons[t].style.borderBottom = t === tab ? '2px solid var(--yt-accent, #2196f3)' : '2px solid transparent';
                 tabContents[t].style.display = t === tab ? 'block' : 'none';
             });
         }
@@ -1347,6 +1594,12 @@
         setupFullscreenQualitySwitcher();
         // 设置 Shorts 视频速度
         applyShortsSpeed();
+        // 设置深浅色模式
+        initThemeStyle();
+        applyTheme();
+        if (localStorage.getItem(THEME_STORAGE_KEY) === 'system') {
+            watchSystemTheme();
+        }
 
         if (window.location.pathname === '/') {
             const enabled = localStorage.getItem(STORAGE_KEY_ENABLED) === 'true';
