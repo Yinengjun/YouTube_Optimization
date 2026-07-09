@@ -330,6 +330,7 @@
     }
 
     // 设置视频结束监听器
+    let _videoEndHandler = null;
     function setupVideoEndListener() {
         const video = document.querySelector('video');
         if (!video) return;
@@ -339,7 +340,7 @@
             if (player) {
                 toggleWebFullscreen();
             }
-        });
+        }, { once: true });
     }
 
     // 尝试自动进入网页全屏
@@ -363,13 +364,18 @@
     }
 
     // 设置视频全屏画质
+    let _fullscreenHandler = null;
     function setupFullscreenQualitySwitcher() {
         const video = document.querySelector('video');
         if (!video) return;
 
         let prevQuality = null;
 
-        document.addEventListener('fullscreenchange', () => {
+        if (_fullscreenHandler) {
+            document.removeEventListener('fullscreenchange', _fullscreenHandler);
+        }
+
+        _fullscreenHandler = () => {
             const isFullscreen = document.fullscreenElement !== null;
             const ytPlayer = document.querySelector('ytd-player')?.getPlayer?.();
             if (!ytPlayer) return;
@@ -386,7 +392,7 @@
                 if (videoMaxSwitch) {
                     const levels = ytPlayer.getAvailableQualityLevels?.();
                     if (levels?.length > 0) {
-                        const best = levels[0]; // 通常为视频最高分辨率
+                        const best = levels[0];
                         ytPlayer.setPlaybackQualityRange(best);
                         ytPlayer.setPlaybackQuality(best);
                         console.log(`[YouTube脚本] 进入全屏：使用视频最高画质 ${best}`);
@@ -396,12 +402,12 @@
                     if (playerRect) {
                         const width = playerRect.width * window.devicePixelRatio;
                         const height = playerRect.height * window.devicePixelRatio;
-                        const targetHeight = Math.max(width, height); // 通常只看高即可
+                        const targetHeight = Math.max(width, height);
 
                         const levels = ytPlayer.getAvailableQualityLevels?.();
                         const matched = levels?.find(lv => {
                             const h = parseInt(lv.replace(/\D/g, '')) || 0;
-                            return h <= targetHeight + 100; // 允许略大
+                            return h <= targetHeight + 100;
                         });
 
                         if (matched) {
@@ -417,7 +423,6 @@
                     console.log(`[YouTube脚本] 进入全屏：使用指定画质 ${fullscreenQuality}`);
                 }
             } else {
-                // 退出全屏：恢复原画质
                 const restoreQuality = localStorage.getItem('yt-default-quality') || prevQuality;
                 if (restoreQuality && restoreQuality !== ytPlayer.getPlaybackQuality?.()) {
                     ytPlayer.setPlaybackQualityRange(restoreQuality);
@@ -425,8 +430,9 @@
                     console.log(`[YouTube脚本] 已退出全屏，画质恢复为 ${restoreQuality}`);
                 }
             }
+        };
 
-        });
+        document.addEventListener('fullscreenchange', _fullscreenHandler);
     }
 
     // 确保互斥开关
@@ -448,18 +454,26 @@
 
     // 设置推荐过滤器
     function setupRecommendationFilter() {
-        const getSettings = () => ({
-            enabled: localStorage.getItem('yt-filter-enabled') === 'true',
-            filterHome: localStorage.getItem('yt-filter-home') === 'true',
-            filterRelated: localStorage.getItem('yt-filter-related') === 'true',
-            filterMembersOnly: localStorage.getItem('yt-filter-members-only') === 'true',
-            filterKeywords: localStorage.getItem('yt-filter-keywords') === 'true',
-            filterProgress: localStorage.getItem('yt-filter-progress') === 'true',
-            progressThreshold: parseInt(localStorage.getItem('yt-filter-progress-threshold')) || 90,
-            keywords: JSON.parse(localStorage.getItem('yt-filter-words') || '[]'),
-            filterPublishTimeEnabled: localStorage.getItem('yt-filter-publish-time-enabled') === 'true',
-            publishTimeThreshold: parseInt(localStorage.getItem('yt-filter-publish-time-threshold')) || 12
-        });
+        const getSettings = () => {
+            let keywords = [];
+            try {
+                keywords = JSON.parse(localStorage.getItem('yt-filter-words') || '[]');
+            } catch (e) {
+                keywords = [];
+            }
+            return {
+                enabled: localStorage.getItem('yt-filter-enabled') === 'true',
+                filterHome: localStorage.getItem('yt-filter-home') === 'true',
+                filterRelated: localStorage.getItem('yt-filter-related') === 'true',
+                filterMembersOnly: localStorage.getItem('yt-filter-members-only') === 'true',
+                filterKeywords: localStorage.getItem('yt-filter-keywords') === 'true',
+                filterProgress: localStorage.getItem('yt-filter-progress') === 'true',
+                progressThreshold: parseInt(localStorage.getItem('yt-filter-progress-threshold')) || 90,
+                keywords: keywords,
+                filterPublishTimeEnabled: localStorage.getItem('yt-filter-publish-time-enabled') === 'true',
+                publishTimeThreshold: parseInt(localStorage.getItem('yt-filter-publish-time-threshold')) || 12
+            };
+        };
 
         let hiddenCount = 0;
 
@@ -602,8 +616,11 @@
             const target = document.querySelector('ytd-page-manager');
             if (!target) return;
 
+            if (window._ytFilterObserver) window._ytFilterObserver.disconnect();
+
             const observer = new MutationObserver(() => filterHomeVideos());
             observer.observe(target, { childList: true, subtree: true });
+            window._ytFilterObserver = observer;
 
             filterHomeVideos();
         }
@@ -1134,7 +1151,7 @@
                     // 清除旧词块（保留输入框）
                     [...keywordBox.querySelectorAll('.keyword-chip')].forEach(el => el.remove());
 
-                    const keywords = JSON.parse(localStorage.getItem('yt-filter-words') || '[]');
+                    const keywords = (() => { try { return JSON.parse(localStorage.getItem('yt-filter-words') || '[]'); } catch (e) { return []; } })();
                     keywords.forEach(word => {
                         const chip = document.createElement('span');
                         chip.className = 'keyword-chip';
@@ -1167,7 +1184,7 @@
                     if (e.key === 'Enter') {
                         const value = keywordInput.value.trim();
                         if (value) {
-                            let keywords = JSON.parse(localStorage.getItem('yt-filter-words') || '[]');
+                            let keywords = (() => { try { return JSON.parse(localStorage.getItem('yt-filter-words') || '[]'); } catch (e) { return []; } })();
                             if (!keywords.includes(value)) {
                                 keywords.push(value);
                                 localStorage.setItem('yt-filter-words', JSON.stringify(keywords));
