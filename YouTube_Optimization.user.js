@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube 优化
 // @description  自动设置 YouTube 视频分辨率、播放速度，添加网页全屏功能，整合到控制面板，支持自动隐藏与收起。
-// @version      1.0.7
+// @version      1.0.8
 // @match        *://www.youtube.com/*
 // @grant        GM_registerMenuCommand
 // @updateURL    https://ba.sh/A6Ms
@@ -37,6 +37,305 @@
     const FLOAT_STYLE_KEY = 'yt-float-style';
     const minColumns = 3;
     const maxColumns = 8;
+
+    // ===== 详细统计信息（Stats for nerds）增强 =====
+    // 面板结构：每行是「一个 <div> 标签(直接文本) + 其 nextElementSibling 值容器」
+    // key：存储键；en：英文原文标签；zh：显示的中文标签；graph：值里含折线图表(canvas)
+    const STATS_ROWS = [
+        { key: 'videoId',    en: 'Video ID / sCPN',       zh: '视频 ID / 会话标识' },
+        { key: 'viewport',   en: 'Viewport / Frames',     zh: '视窗 / 丢帧统计' },
+        { key: 'res',        en: 'Current / Optimal Res', zh: '当前 / 最佳分辨率' },
+        { key: 'volume',     en: 'Volume / Normalized',   zh: '音量 / 响度标准化' },
+        { key: 'codecs',     en: 'Codecs',                zh: '编解码格式' },
+        { key: 'color',      en: 'Color',                 zh: '色彩特性' },
+        { key: 'connection', en: 'Connection Speed',      zh: '连接速度', graph: true, highlight: v => v / 5 },
+        { key: 'network',    en: 'Network Activity',      zh: '网络活动', graph: true },
+        { key: 'buffer',     en: 'Buffer Health',         zh: '缓冲时长', graph: true, highlight: v => v / 30 },
+        { key: 'latency',    en: 'Live Latency',          zh: '直播延迟', graph: true, highlight: v => 1 - v / 30 },
+        { key: 'date',       en: 'Date',                  zh: '日期' },
+        { key: 'mystery',    en: 'Mystery Text',          zh: '开发调试参数' },
+    ];
+
+    // YouTube 图表所用的 Spectral 发散色带（红→橙→黄→绿→蓝，低→高）
+    const SPECTRAL = [
+        'rgb(213,62,79)', 'rgb(244,109,67)', 'rgb(253,174,97)', 'rgb(254,224,139)',
+        'rgb(230,245,152)', 'rgb(171,221,164)', 'rgb(102,194,165)', 'rgb(50,136,189)'
+    ];
+    // t：0(差/红) ~ 1(好/蓝)
+    function spectralColor(t) {
+        const n = SPECTRAL.length;
+        const i = Math.round(Math.max(0, Math.min(1, t)) * (n - 1));
+        return SPECTRAL[i];
+    }
+
+    // 根据文本（英文原文或已汉化中文）识别是哪一行
+    function matchStatRow(text) {
+        const t = (text || '').trim();
+        if (!t) return null;
+        return STATS_ROWS.find(r => t === r.en || t.startsWith(r.en) || t === r.zh || t.startsWith(r.zh)) || null;
+    }
+
+    // 行内单位换算：把 value 元素里的文本节点按正则替换
+    function convertStatValue(valueEl, regex, fn) {
+        if (!valueEl) return;
+        const walk = (node) => {
+            node.childNodes.forEach(child => {
+                if (child.nodeType === Node.TEXT_NODE) {
+                    if (regex.test(child.nodeValue)) {
+                        child.nodeValue = child.nodeValue.replace(regex, (m, num) =>
+                            fn(parseFloat(String(num).replace(/,/g, ''))));
+                    }
+                } else if (child.nodeType === Node.ELEMENT_NODE) {
+                    walk(child);
+                }
+            });
+        };
+        walk(valueEl);
+    }
+
+    // 设置整行显隐（用 class + !important，压过 YouTube 刷新时重设的 display）
+    // 返回被用作“整行”的元素（供未收录行判定复用）
+    function setStatRowVisibility(labelEl, valueEl, show) {
+        const parent = labelEl.parentElement;
+        if (parent && parent.childElementCount === 2 &&
+            parent.firstElementChild === labelEl && parent.lastElementChild === valueEl) {
+            parent.classList.toggle('yt-stat-hidden', !show); // 该父元素恰好只包住这一对 label/value
+            return parent;
+        }
+        labelEl.classList.toggle('yt-stat-hidden', !show);
+        if (valueEl) valueEl.classList.toggle('yt-stat-hidden', !show);
+        return labelEl;
+    }
+
+    // 处理单个统计面板：汉化 -> 显隐 -> 单位换算 -> 自适应布局 -> 数值高亮
+    function applyStatsPanel(panel) {
+        const highlightOn = localStorage.getItem('yt-stats-highlight') === 'true'; // 默认关
+        const walker = document.createTreeWalker(panel, NodeFilter.SHOW_TEXT, null, false);
+        const hits = [];
+        let node;
+        while (node = walker.nextNode()) {
+            const def = matchStatRow(node.nodeValue);
+            if (def && node.parentElement) hits.push({ def, textNode: node, labelEl: node.parentElement });
+        }
+        const recognized = new Set(); // 已收录的行容器，用于隐藏其它未知/调试行
+        hits.forEach(({ def, textNode, labelEl }) => {
+            // 汉化（幂等）
+            if (textNode.nodeValue.indexOf(def.en) !== -1) {
+                textNode.nodeValue = textNode.nodeValue.replace(def.en, def.zh);
+            }
+            const valueEl = labelEl.nextElementSibling;
+            // 显隐：默认显示，取消勾选（值为 'false'）即隐藏
+            const show = localStorage.getItem('yt-stats-show-' + def.key) !== 'false';
+            setStatRowVisibility(labelEl, valueEl, show);
+            recognized.add(labelEl.parentElement); // 记录该行容器（内容区的直接子元素）
+            // 占位（仅图表行，默认关）：开→标签保留 110px 固定列宽 + 图表位置，用于对齐；关→收缩贴紧
+            const keepPad = def.graph && localStorage.getItem('yt-stats-pad-' + def.key) === 'true';
+            labelEl.style.textAlign = 'left';
+            labelEl.style.width = keepPad ? '' : 'auto'; // 默认 auto 收缩，消除标签列留白
+            labelEl.style.verticalAlign = 'top';
+            // 图表（canvas）显隐：仅带视图的行
+            if (def.graph && valueEl) {
+                const showGraph = localStorage.getItem('yt-stats-graph-' + def.key) !== 'false';
+                valueEl.querySelectorAll('canvas').forEach(c => {
+                    c.style.display = showGraph ? '' : 'none';
+                    // 图表隐藏时：占位开→保留 300px 位置对齐数值；占位关→收缩，数值左移
+                    const box = c.parentElement; // .ytp-horizonchart
+                    if (box) box.style.width = showGraph ? '' : (keepPad ? '300px' : 'auto');
+                });
+            } else if (valueEl) {
+                // 纯文本行：限制宽度并换行，避免单条长文本（如视频 ID）把面板撑宽
+                valueEl.style.display = 'inline-block';
+                valueEl.style.verticalAlign = 'top';
+                valueEl.style.maxWidth = '300px';
+                valueEl.style.whiteSpace = 'normal';
+                valueEl.style.overflowWrap = 'anywhere';
+            }
+            // 单位换算：Kbps -> MB/s，KB -> MB
+            if (def.key === 'connection') {
+                convertStatValue(valueEl, /([\d.,]+)\s*Kbps/i,
+                    kbps => (kbps / 8 / 1024).toFixed(2) + ' MB/s');
+            } else if (def.key === 'network') {
+                convertStatValue(valueEl, /([\d.,]+)\s*KB\b/i,
+                    kb => (kb / 1024).toFixed(2) + ' MB');
+            }
+            // 数值高亮（默认关）：按范围用 YouTube 图表的 Spectral 配色为数值着色
+            if (def.highlight && valueEl) {
+                if (highlightOn) {
+                    const m = valueEl.textContent.match(/-?[\d.]+/);
+                    valueEl.style.color = m ? spectralColor(def.highlight(parseFloat(m[0]))) : '';
+                } else if (valueEl.style.color) {
+                    valueEl.style.color = '';
+                }
+            }
+        });
+        // 隐藏所有未收录的行（YouTube 的 Shader Info / Protected / SABR 调试等），保持面板干净
+        const content = panel.querySelector('.html5-video-info-panel-content');
+        if (content) {
+            [...content.children].forEach(row => {
+                if (!recognized.has(row)) row.classList.add('yt-stat-hidden');
+            });
+        }
+        // 面板按内容自适应宽度
+        panel.style.width = 'fit-content';
+        panel.style.maxWidth = 'none';
+    }
+
+    // 对页面上所有已打开的统计面板应用（设置变更时调用）
+    function applyStatsPanels(scope) {
+        (scope || document).querySelectorAll('.html5-video-info-panel').forEach(applyStatsPanel);
+    }
+
+    // 给单个面板挂一个作用域观察者，跟随面板数值刷新持续增强
+    function attachStatsPanel(panel) {
+        if (panel._ytStatsPanelObserver) { applyStatsPanel(panel); return; }
+        let scheduled = false;
+        const po = new MutationObserver(() => {
+            if (scheduled) return; // 每帧最多处理一次
+            scheduled = true;
+            requestAnimationFrame(() => {
+                scheduled = false;
+                po.disconnect();                 // 避免自身修改触发回环
+                try { applyStatsPanel(panel); }
+                finally { po.observe(panel, { childList: true, subtree: true, characterData: true }); }
+            });
+        });
+        po.observe(panel, { childList: true, subtree: true, characterData: true });
+        panel._ytStatsPanelObserver = po;
+        applyStatsPanel(panel);
+    }
+
+    // 注入面板样式：关闭 X 按钮默认透明，仅鼠标划过面板时淡出显示，避免遮挡
+    function injectStatsPanelStyle() {
+        if (document.getElementById('yt-stats-panel-style')) return;
+        const style = document.createElement('style');
+        style.id = 'yt-stats-panel-style';
+        style.textContent = `
+            .html5-video-info-panel-close {
+                opacity: 0 !important;
+                transition: opacity .15s ease !important;
+            }
+            .html5-video-info-panel:hover .html5-video-info-panel-close {
+                opacity: .45 !important;
+            }
+            .html5-video-info-panel-close:hover {
+                opacity: 1 !important;
+            }
+            /* 让面板/内容容器只按“可见”内容自适应宽度，隐藏行不再撑宽 */
+            .html5-video-info-panel {
+                width: -moz-fit-content !important;
+                width: fit-content !important;
+                min-width: 0 !important;
+                max-width: none !important;
+            }
+            .html5-video-info-panel-content {
+                width: auto !important;
+                min-width: 0 !important;
+                max-width: none !important;
+            }
+            /* 用 class + !important 隐藏行，压过 YouTube 刷新时重设的 display:block，避免闪现 */
+            .html5-video-info-panel .yt-stat-hidden {
+                display: none !important;
+            }
+        `;
+        (document.head || document.documentElement).appendChild(style);
+    }
+
+    // 监听播放器，捕捉「详细统计信息」面板的出现/移除
+    function setupStatsEnhancer() {
+        injectStatsPanelStyle();
+        const target = document.getElementById('movie_player') ||
+                       document.querySelector('.html5-video-player') || document.body;
+        if (!target) return;
+        // 先处理当前已存在的面板
+        document.querySelectorAll('.html5-video-info-panel').forEach(attachStatsPanel);
+        if (target._ytStatsMainObserver) return; // 主观察者已就绪
+        const main = new MutationObserver((list) => {
+            for (const m of list) {
+                m.addedNodes.forEach(n => {
+                    if (n.nodeType !== 1) return;
+                    if (n.classList.contains('html5-video-info-panel')) attachStatsPanel(n);
+                    else if (n.querySelectorAll) n.querySelectorAll('.html5-video-info-panel').forEach(attachStatsPanel);
+                });
+                m.removedNodes.forEach(n => {
+                    if (n.nodeType !== 1) return;
+                    const panel = n.classList.contains('html5-video-info-panel') ? n
+                                : (n.querySelector && n.querySelector('.html5-video-info-panel'));
+                    if (panel && panel._ytStatsPanelObserver) {
+                        panel._ytStatsPanelObserver.disconnect();
+                        panel._ytStatsPanelObserver = null;
+                    }
+                });
+            }
+        });
+        main.observe(target, { childList: true, subtree: true });
+        target._ytStatsMainObserver = main;
+    }
+
+    // 判断统计面板是否处于打开状态（面板为 fixed 定位，不能用 offsetParent 判断）
+    function isStatsPanelOpen() {
+        const panel = document.querySelector('.html5-video-info-panel');
+        return !!(panel && panel.offsetWidth > 0 && getComputedStyle(panel).display !== 'none');
+    }
+
+    // 通过播放器右键菜单里的“详细统计信息”项开/关面板（YouTube 无官方快捷键，此项为切换）
+    function toggleStatsPanelViaMenu() {
+        return new Promise(resolve => {
+            const player = document.getElementById('movie_player');
+            const video = (player && player.querySelector('video')) || document.querySelector('video');
+            if (!video) return resolve(false);
+            const rect = video.getBoundingClientRect();
+            try {
+                video.dispatchEvent(new MouseEvent('contextmenu', {
+                    bubbles: true, cancelable: true,
+                    clientX: Math.round(rect.left + rect.width / 2),
+                    clientY: Math.round(rect.top + rect.height / 2)
+                }));
+            } catch (err) {
+                return resolve(false);
+            }
+            // 菜单渲染 + 绑定点击处理需要时间；固定等待后再点击
+            setTimeout(() => {
+                try {
+                    let target = null;
+                    document.querySelectorAll('.ytp-contextmenu .ytp-menuitem').forEach(it => {
+                        const label = (it.querySelector('.ytp-menuitem-label')?.textContent || it.textContent || '').trim();
+                        if (/stats for nerds|详细统计信息|統計/i.test(label)) target = it;
+                    });
+                    if (target) { target.click(); return resolve(true); } // 命中即切换面板
+                    // 无目标项：收起菜单
+                    video.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                    resolve(false);
+                } catch (err) {
+                    resolve(false);
+                }
+            }, 450);
+        });
+    }
+
+    // 需要时把面板切到目标状态（开/关）
+    async function setStatsPanelOpen(desired) {
+        if (isStatsPanelOpen() === desired) return;
+        await toggleStatsPanelViaMenu();
+    }
+
+    // 视频页自动开启统计面板（默认关闭）；互斥锁防止多次导航事件并发触发
+    let _autoOpenBusy = false;
+    function autoOpenStatsPanel() {
+        if (localStorage.getItem('yt-stats-auto-open') !== 'true' || !isVideoPage()) return;
+        if (_autoOpenBusy || isStatsPanelOpen()) return;
+        _autoOpenBusy = true;
+        let tries = 0;
+        const finish = () => { _autoOpenBusy = false; };
+        const tick = async () => {
+            if (localStorage.getItem('yt-stats-auto-open') !== 'true' || !isVideoPage()) return finish();
+            if (isStatsPanelOpen()) return finish();      // 已打开，停止
+            if (tries++ >= 5) return finish();            // 超过重试次数放弃
+            if (!document.querySelector('#movie_player video')) { setTimeout(tick, 700); return; }
+            await toggleStatsPanelViaMenu();
+            setTimeout(tick, 900);                        // 若仍未打开则再试；已打开会在上面提前结束
+        };
+        tick();
+    }
 
     // 设置视频画质
     function setVideoQuality(quality) {
@@ -924,7 +1223,7 @@
             background: #f8f8f8;
         `;
 
-        const tabs = ['行为', '过滤', '界面', '快捷键'];
+        const tabs = ['行为', '过滤', '界面', '统计面板', '快捷键'];
         const tabButtons = {};
         const tabContents = {};
 
@@ -1485,6 +1784,123 @@
                 content.appendChild(ytSection);
             }
 
+            if (tab === '统计面板') {
+                content.style.maxHeight = '60vh';
+                content.style.overflowY = 'auto';
+
+                // 自动开启统计面板（默认关闭）
+                const autoOpenLabel = document.createElement('label');
+                autoOpenLabel.textContent = '自动开启统计面板';
+                autoOpenLabel.style.cssText = 'display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; font-weight: bold;';
+
+                const autoOpenSwitch = document.createElement('input');
+                autoOpenSwitch.type = 'checkbox';
+                autoOpenSwitch.style.transform = 'scale(1.2)';
+                autoOpenSwitch.checked = localStorage.getItem('yt-stats-auto-open') === 'true';
+                autoOpenSwitch.addEventListener('change', () => {
+                    localStorage.setItem('yt-stats-auto-open', autoOpenSwitch.checked);
+                    if (autoOpenSwitch.checked) autoOpenStatsPanel();
+                    else setStatsPanelOpen(false); // 关闭时收起已打开的面板
+                });
+                autoOpenLabel.appendChild(autoOpenSwitch);
+
+                const autoOpenNote = document.createElement('div');
+                autoOpenNote.textContent = '打开视频页面后自动展开“详细统计信息”面板。';
+                autoOpenNote.style.cssText = 'font-size: 12px; color: #666; margin-bottom: 18px;';
+
+                content.appendChild(autoOpenLabel);
+                content.appendChild(autoOpenNote);
+
+                // 数值高亮（默认关）
+                const hlLabel = document.createElement('label');
+                hlLabel.textContent = '数值高亮';
+                hlLabel.style.cssText = 'display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; font-weight: bold;';
+
+                const hlSwitch = document.createElement('input');
+                hlSwitch.type = 'checkbox';
+                hlSwitch.style.transform = 'scale(1.2)';
+                hlSwitch.checked = localStorage.getItem('yt-stats-highlight') === 'true';
+                hlSwitch.addEventListener('change', () => {
+                    localStorage.setItem('yt-stats-highlight', hlSwitch.checked);
+                    applyStatsPanels();
+                });
+                hlLabel.appendChild(hlSwitch);
+
+                const hlNote = document.createElement('div');
+                hlNote.textContent = '按数值范围为连接速度 / 缓冲时长 / 直播延迟着色（采用 YouTube 图表的 Spectral 配色：蓝绿＝好、红＝差）。';
+                hlNote.style.cssText = 'font-size: 12px; color: #666; margin-bottom: 18px;';
+
+                content.appendChild(hlLabel);
+                content.appendChild(hlNote);
+
+                // 显示项设置
+                const statsTitle = document.createElement('div');
+                statsTitle.textContent = '显示项';
+                statsTitle.style.cssText = 'font-weight: bold; margin-bottom: 6px; font-size: 15px; padding-top: 12px; border-top: 1px solid var(--yt-border, #444);';
+
+                const statsNote = document.createElement('div');
+                statsNote.textContent = '标签默认左对齐并收缩、消除留白。三列复选框：图标＝显示该行折线图表；占位＝勾选后恢复固定列宽并保留图表位置，使各图表行数值对齐（默认关＝紧凑，仅带图表的行有）；显示＝显示/隐藏整行。';
+                statsNote.style.cssText = 'font-size: 12px; color: #666; margin-bottom: 12px;';
+
+                content.appendChild(statsTitle);
+                content.appendChild(statsNote);
+
+                // 每个复选框列固定宽度，保证与表头对齐
+                const cell = (child) => {
+                    const d = document.createElement('div');
+                    d.style.cssText = 'width: 40px; display: flex; justify-content: center; align-items: center;';
+                    if (child) d.appendChild(child);
+                    return d;
+                };
+                const mkCheckbox = (storageKey, title, defaultOn) => {
+                    const cb = document.createElement('input');
+                    cb.type = 'checkbox';
+                    cb.title = title;
+                    cb.style.cssText = 'transform: scale(1.2); cursor: pointer;';
+                    const v = localStorage.getItem(storageKey);
+                    cb.checked = (defaultOn === false) ? (v === 'true') : (v !== 'false');
+                    cb.addEventListener('change', () => {
+                        localStorage.setItem(storageKey, cb.checked);
+                        applyStatsPanels();
+                    });
+                    return cb;
+                };
+
+                // 表头
+                const headRow = document.createElement('div');
+                headRow.style.cssText = 'display: flex; align-items: center; justify-content: flex-end; margin-bottom: 6px; font-size: 12px; color: #888;';
+                ['图标', '占位', '显示'].forEach(t => {
+                    const h = document.createElement('div');
+                    h.textContent = t;
+                    h.style.cssText = 'width: 40px; text-align: center;';
+                    headRow.appendChild(h);
+                });
+                content.appendChild(headRow);
+
+                STATS_ROWS.forEach(rowDef => {
+                    const row = document.createElement('div');
+                    row.style.cssText = 'display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;';
+
+                    const span = document.createElement('span');
+                    span.textContent = rowDef.zh;
+
+                    const controls = document.createElement('div');
+                    controls.style.cssText = 'display: flex; align-items: center;';
+
+                    // 图标列 + 占位列：仅带图表的行有
+                    controls.appendChild(cell(rowDef.graph
+                        ? mkCheckbox('yt-stats-graph-' + rowDef.key, '显示该行的折线图表') : null));
+                    controls.appendChild(cell(rowDef.graph
+                        ? mkCheckbox('yt-stats-pad-' + rowDef.key, '保留固定列宽与图表位置以对齐数值（默认关闭＝紧凑）', false) : null));
+                    // 显示列：所有行
+                    controls.appendChild(cell(mkCheckbox('yt-stats-show-' + rowDef.key, '显示/隐藏整行')));
+
+                    row.appendChild(span);
+                    row.appendChild(controls);
+                    content.appendChild(row);
+                });
+            }
+
             if (tab === '快捷键') {
                 const hotkeySettings = document.createElement('div');
                 hotkeySettings.style.display = 'flex';
@@ -1520,7 +1936,7 @@
                         key: 'show-stats',
                         label: '显示详细统计信息',
                         defaultKey: 'd',
-                        note: '模拟 Ctrl+Shift+Alt+D'
+                        note: '开关“详细统计信息”面板'
                     },
                     {
                     key: 'go-home',
@@ -1612,6 +2028,10 @@
         setupFullscreenQualitySwitcher();
         // 设置 Shorts 视频速度
         applyShortsSpeed();
+        // 增强详细统计信息面板（汉化 / 显隐 / 单位换算）
+        setupStatsEnhancer();
+        // 视频页自动开启统计面板（默认关闭）
+        autoOpenStatsPanel();
         // 设置深浅色模式
         initThemeStyle();
         applyTheme();
@@ -1747,17 +2167,8 @@
                 key: 'show-stats',
                 defaultKey: 'd',
                 action: () => {
-                    // 模拟 Ctrl+Shift+Alt+D
-                    const evt = new KeyboardEvent('keydown', {
-                        bubbles: true,
-                        cancelable: true,
-                        key: 'D',
-                        code: 'KeyD',
-                        ctrlKey: true,
-                        shiftKey: true,
-                        altKey: true
-                    });
-                    document.dispatchEvent(evt);
+                    // 通过播放器右键菜单切换“详细统计信息”（YouTube 无官方快捷键）
+                    toggleStatsPanelViaMenu();
                 }
             },
             {
