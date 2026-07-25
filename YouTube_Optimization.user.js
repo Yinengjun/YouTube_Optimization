@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube 优化
 // @description  自动设置 YouTube 视频分辨率、播放速度，添加网页全屏功能，整合到控制面板，支持自动隐藏与收起。
-// @version      1.0.8
+// @version      1.0.9
 // @match        *://www.youtube.com/*
 // @grant        GM_registerMenuCommand
 // @updateURL    https://ba.sh/A6Ms
@@ -175,6 +175,8 @@
                 if (!recognized.has(row)) row.classList.add('yt-stat-hidden');
             });
         }
+        // 横置布局（默认关）：横向排列各数据行
+        panel.classList.toggle('yt-stat-horizontal', localStorage.getItem('yt-stats-horizontal') === 'true');
         // 面板按内容自适应宽度
         panel.style.width = 'fit-content';
         panel.style.maxWidth = 'none';
@@ -235,6 +237,13 @@
             /* 用 class + !important 隐藏行，压过 YouTube 刷新时重设的 display:block，避免闪现 */
             .html5-video-info-panel .yt-stat-hidden {
                 display: none !important;
+            }
+            /* 横置布局：各数据行横向排列（建议仅在开启少量数据项时使用） */
+            .html5-video-info-panel.yt-stat-horizontal .html5-video-info-panel-content {
+                display: flex !important;
+                flex-flow: row wrap !important;
+                align-items: flex-start !important;
+                gap: 2px 18px !important;
             }
         `;
         (document.head || document.documentElement).appendChild(style);
@@ -1196,6 +1205,11 @@
         `;
 
         // 添加关闭按钮 X
+        // 点击遮罩层关闭面板
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) modal.style.display = 'none';
+        });
+
         const closeX = document.createElement('button');
         closeX.className = 'yt-close-btn';
         closeX.textContent = '×';
@@ -1832,6 +1846,28 @@
 
                 content.appendChild(hlLabel);
                 content.appendChild(hlNote);
+
+                // 横置布局（默认关）
+                const horizLabel = document.createElement('label');
+                horizLabel.textContent = '横置布局';
+                horizLabel.style.cssText = 'display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; font-weight: bold;';
+
+                const horizSwitch = document.createElement('input');
+                horizSwitch.type = 'checkbox';
+                horizSwitch.style.transform = 'scale(1.2)';
+                horizSwitch.checked = localStorage.getItem('yt-stats-horizontal') === 'true';
+                horizSwitch.addEventListener('change', () => {
+                    localStorage.setItem('yt-stats-horizontal', horizSwitch.checked);
+                    applyStatsPanels();
+                });
+                horizLabel.appendChild(horizSwitch);
+
+                const horizNote = document.createElement('div');
+                horizNote.textContent = '将各数据项横向排成一行显示。建议仅在只开启少量数据项时启用，项目过多会使面板很宽。';
+                horizNote.style.cssText = 'font-size: 12px; color: #666; margin-bottom: 18px;';
+
+                content.appendChild(horizLabel);
+                content.appendChild(horizNote);
 
                 // 显示项设置
                 const statsTitle = document.createElement('div');
