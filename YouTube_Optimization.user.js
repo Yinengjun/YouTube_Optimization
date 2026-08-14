@@ -1,7 +1,7 @@
-// ==UserScript==
+﻿// ==UserScript==
 // @name         YouTube 优化
 // @description  自动设置 YouTube 视频分辨率、播放速度，添加网页全屏功能，整合到控制面板，支持自动隐藏与收起。
-// @version      1.0.9
+// @version      1.0.10
 // @match        *://www.youtube.com/*
 // @grant        GM_registerMenuCommand
 // @updateURL    https://ba.sh/A6Ms
@@ -779,7 +779,10 @@
                 progressThreshold: parseInt(localStorage.getItem('yt-filter-progress-threshold')) || 90,
                 keywords: keywords,
                 filterPublishTimeEnabled: localStorage.getItem('yt-filter-publish-time-enabled') === 'true',
-                publishTimeThreshold: parseInt(localStorage.getItem('yt-filter-publish-time-threshold')) || 12
+                publishTimeThreshold: parseInt(localStorage.getItem('yt-filter-publish-time-threshold')) || 12,
+                filterBrandVideoShelf: localStorage.getItem('yt-filter-brand-video-shelf') === 'true',
+                filterGameShelf: localStorage.getItem('yt-filter-game-shelf') !== 'false',
+                filterShortsShelf: localStorage.getItem('yt-filter-shorts-shelf') === 'true'
             };
         };
 
@@ -851,10 +854,37 @@
 
         // 过滤首页视频
         function filterHomeVideos() {
-            // 获取用户设定，例如是否启用过滤、关键词、进度阈值等
             const settings = getSettings();
-            // 如果过滤功能未启用，或者既未启用首页过滤也未启用发布时间过滤，则退出函数
-            if (!settings.enabled || (!settings.filterHome && !settings.filterPublishTimeEnabled)) return;
+            if (!settings.enabled || (!settings.filterHome && !settings.filterPublishTimeEnabled && !settings.filterBrandVideoShelf && !settings.filterGameShelf && !settings.filterShortsShelf)) return;
+
+            // 过滤专版会员视频推荐
+            if (settings.filterBrandVideoShelf) {
+                document.querySelectorAll('ytd-brand-video-shelf-renderer:not([data-yt-filtered])').forEach(shelf => {
+                    shelf.style.display = 'none';
+                    shelf.setAttribute('data-yt-filtered', '1');
+                    hiddenCount++;
+                });
+            }
+
+            // 过滤游戏推荐（YouTube 游戏大本营）
+            if (settings.filterGameShelf) {
+                document.querySelectorAll('ytd-rich-shelf-renderer:not([data-yt-filtered])').forEach(shelf => {
+                    if (shelf.querySelector('a[href="/playables"]')) {
+                        shelf.style.display = 'none';
+                        shelf.setAttribute('data-yt-filtered', '1');
+                        hiddenCount++;
+                    }
+                });
+            }
+
+            // 过滤 Shorts 推荐
+            if (settings.filterShortsShelf) {
+                document.querySelectorAll('ytd-rich-shelf-renderer[is-shorts]:not([data-yt-filtered])').forEach(shelf => {
+                    shelf.style.display = 'none';
+                    shelf.setAttribute('data-yt-filtered', '1');
+                    hiddenCount++;
+                });
+            }
 
             // 查询所有尚未被标记为“已过滤”的视频项（避免重复处理）
             const items = document.querySelectorAll('ytd-rich-item-renderer:not([data-yt-filtered])');
@@ -934,6 +964,34 @@
         }
 
         observeHomePage();
+
+        // 预加载瀑布流：触发 YouTube 加载更多内容
+        function preloadScroll() {
+            if (localStorage.getItem('yt-preload-scroll') !== 'true') return;
+            const count = parseInt(localStorage.getItem('yt-preload-scroll-count')) || 3;
+            let i = 0;
+            const tick = () => {
+                if (i >= count) return;
+                i++;
+                // 找到 YouTube 无限滚动哨兵，临时移入视口触发 IntersectionObserver，加载后恢复
+                const sentinel = document.querySelector('ytd-continuation');
+                if (sentinel) {
+                    const orig = { position: sentinel.style.position, top: sentinel.style.top, left: sentinel.style.left };
+                    sentinel.style.setProperty('position', 'fixed', 'important');
+                    sentinel.style.setProperty('top', '0', 'important');
+                    sentinel.style.setProperty('left', '0', 'important');
+                    setTimeout(() => {
+                        sentinel.style.position = orig.position;
+                        sentinel.style.top = orig.top;
+                        sentinel.style.left = orig.left;
+                    }, 100);
+                }
+                setTimeout(tick, 1000);
+            };
+            setTimeout(tick, 800);
+        }
+
+        preloadScroll();
     }
 
     // 应用列样式
@@ -1237,7 +1295,7 @@
             background: #f8f8f8;
         `;
 
-        const tabs = ['行为', '过滤', '界面', '统计面板', '快捷键'];
+        const tabs = ['行为', '过滤', '界面', '统计面板', '快捷键', '导入导出'];
         const tabButtons = {};
         const tabContents = {};
 
@@ -1398,6 +1456,58 @@
                 content.appendChild(vqNote);
                 content.appendChild(shortsSpeedLabel);
                 content.appendChild(shortsSpeedNote);
+
+                // 预加载瀑布流
+                const preloadLabel = document.createElement('label');
+                preloadLabel.textContent = '预加载瀑布流 ';
+                preloadLabel.style.cssText = 'display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;';
+
+                const preloadSwitch = document.createElement('input');
+                preloadSwitch.type = 'checkbox';
+                preloadSwitch.id = 'preload-scroll-switch';
+                preloadSwitch.checked = localStorage.getItem('yt-preload-scroll') === 'true';
+
+                preloadLabel.appendChild(preloadSwitch);
+
+                const preloadNote = document.createElement('div');
+                preloadNote.textContent = '提前加载更多内容，避免过滤后内容过少导致频繁加载。';
+                preloadNote.style.cssText = 'font-size: 12px; color: #666; margin-bottom: 10px;';
+
+                const preloadSliderLine = document.createElement('div');
+                preloadSliderLine.style.cssText = 'display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px;';
+
+                const preloadSliderLabel = document.createElement('span');
+                preloadSliderLabel.textContent = '提前加载次数：';
+
+                const preloadSlider = document.createElement('input');
+                preloadSlider.type = 'range';
+                preloadSlider.min = '1';
+                preloadSlider.max = '10';
+                preloadSlider.value = localStorage.getItem('yt-preload-scroll-count') || '3';
+                preloadSlider.style.flex = '1';
+                preloadSlider.style.margin = '0 10px';
+
+                const preloadSliderValue = document.createElement('span');
+                preloadSliderValue.textContent = preloadSlider.value;
+                preloadSliderValue.style.minWidth = '20px';
+                preloadSliderValue.style.textAlign = 'center';
+
+                preloadSlider.addEventListener('input', () => {
+                    preloadSliderValue.textContent = preloadSlider.value;
+                    localStorage.setItem('yt-preload-scroll-count', preloadSlider.value);
+                });
+
+                preloadSliderLine.appendChild(preloadSliderLabel);
+                preloadSliderLine.appendChild(preloadSlider);
+                preloadSliderLine.appendChild(preloadSliderValue);
+
+                preloadSwitch.addEventListener('change', () => {
+                    localStorage.setItem('yt-preload-scroll', preloadSwitch.checked);
+                });
+
+                content.appendChild(preloadLabel);
+                content.appendChild(preloadNote);
+                content.appendChild(preloadSliderLine);
 
                 enforceMutualExclusion(afqSwitch, maxqSwitch, vqSwitch);
             }
@@ -1585,6 +1695,38 @@
                 publishTimeInputLine.appendChild(monthsSign);
 
                 filterSettings.appendChild(publishTimeInputLine);
+
+                // 过滤专版会员视频推荐
+                const brandShelfToggle = createToggle('过滤专版会员视频推荐', 'yt-filter-brand-video-shelf');
+                filterSettings.appendChild(brandShelfToggle);
+
+                const brandShelfNote = document.createElement('div');
+                brandShelfNote.textContent = '过滤首页中 ytd-brand-video-shelf-renderer 专版会员视频推荐区域';
+                brandShelfNote.style.cssText = 'font-size: 12px; color: #666; margin-left: 20px; margin-top: -5px;';
+                filterSettings.appendChild(brandShelfNote);
+
+                // 过滤游戏推荐（默认开启）
+                const gameShelfToggle = createToggle('过滤游戏推荐', 'yt-filter-game-shelf');
+                // 默认开启
+                if (localStorage.getItem('yt-filter-game-shelf') === null) {
+                    localStorage.setItem('yt-filter-game-shelf', 'true');
+                    gameShelfToggle.querySelector('input').checked = true;
+                }
+                filterSettings.appendChild(gameShelfToggle);
+
+                const gameShelfNote = document.createElement('div');
+                gameShelfNote.textContent = '过滤首页中 YouTube 游戏大本营等游戏推荐区域';
+                gameShelfNote.style.cssText = 'font-size: 12px; color: #666; margin-left: 20px; margin-top: -5px;';
+                filterSettings.appendChild(gameShelfNote);
+
+                // 过滤 Shorts 推荐（默认关）
+                const shortsShelfToggle = createToggle('过滤 Shorts 推荐', 'yt-filter-shorts-shelf');
+                filterSettings.appendChild(shortsShelfToggle);
+
+                const shortsShelfNote = document.createElement('div');
+                shortsShelfNote.textContent = '过滤首页中 Shorts 推荐区域';
+                shortsShelfNote.style.cssText = 'font-size: 12px; color: #666; margin-left: 20px; margin-top: -5px;';
+                filterSettings.appendChild(shortsShelfNote);
             }
 
             if (tab === '界面') {
@@ -2032,6 +2174,101 @@
                 });
 
                 content.appendChild(hotkeySettings);
+            }
+
+            if (tab === '导入导出') {
+                const ieSection = document.createElement('div');
+                ieSection.style.display = 'flex';
+                ieSection.style.flexDirection = 'column';
+                ieSection.style.gap = '12px';
+
+                const exportLabel = document.createElement('label');
+                exportLabel.textContent = '导出设置';
+                exportLabel.style.cssText = 'font-weight: bold; margin-bottom: 4px;';
+
+                const exportNote = document.createElement('div');
+                exportNote.textContent = '将所有脚本设置导出为 JSON 文件，用于备份或迁移。';
+                exportNote.style.cssText = 'font-size: 12px; color: #666; margin-bottom: 6px;';
+
+                const exportBtn = document.createElement('button');
+                exportBtn.textContent = '导出设置';
+                exportBtn.style.cssText = `
+                    padding: 6px 12px; font-size: 13px; background: var(--yt-accent, #2196f3);
+                    color: #fff; border: none; border-radius: 4px; cursor: pointer;
+                    align-self: flex-start;
+                `;
+                exportBtn.addEventListener('click', () => {
+                    const data = {};
+                    for (let i = 0; i < localStorage.length; i++) {
+                        const key = localStorage.key(i);
+                        if (key && (key.startsWith('yt-') || key.startsWith('yt_'))) {
+                            data[key] = localStorage.getItem(key);
+                        }
+                    }
+                    data._exportTime = new Date().toISOString();
+                    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `yt-optimization-settings-${new Date().toISOString().slice(0, 10)}.json`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                });
+
+                const importDivider = document.createElement('hr');
+                importDivider.style.cssText = 'border: none; border-top: 1px solid var(--yt-border, #ddd); margin: 8px 0;';
+
+                const importLabel = document.createElement('label');
+                importLabel.textContent = '导入设置';
+                importLabel.style.cssText = 'font-weight: bold; margin-bottom: 4px;';
+
+                const importNote = document.createElement('div');
+                importNote.textContent = '从 JSON 文件恢复设置，将覆盖当前所有脚本设置。';
+                importNote.style.cssText = 'font-size: 12px; color: #666; margin-bottom: 6px;';
+
+                const importInput = document.createElement('input');
+                importInput.type = 'file';
+                importInput.accept = '.json';
+
+                const importBtn = document.createElement('button');
+                importBtn.textContent = '导入设置';
+                importBtn.style.cssText = `
+                    padding: 6px 12px; font-size: 13px; background: var(--yt-danger, #c00);
+                    color: #fff; border: none; border-radius: 4px; cursor: pointer;
+                    align-self: flex-start;
+                `;
+                importBtn.addEventListener('click', () => {
+                    const file = importInput.files[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                        try {
+                            const data = JSON.parse(e.target.result);
+                            let count = 0;
+                            for (const key of Object.keys(data)) {
+                                if (key.startsWith('yt-') || key.startsWith('yt_')) {
+                                    localStorage.setItem(key, data[key]);
+                                    count++;
+                                }
+                            }
+                            alert(`导入完成，共恢复 ${count} 项设置。部分设置需要刷新页面后生效。`);
+                        } catch (err) {
+                            alert('导入失败：文件格式不正确');
+                        }
+                    };
+                    reader.readAsText(file);
+                });
+
+                ieSection.appendChild(exportLabel);
+                ieSection.appendChild(exportNote);
+                ieSection.appendChild(exportBtn);
+                ieSection.appendChild(importDivider);
+                ieSection.appendChild(importLabel);
+                ieSection.appendChild(importNote);
+                ieSection.appendChild(importInput);
+                ieSection.appendChild(importBtn);
+
+                content.appendChild(ieSection);
             }
 
             dialog.appendChild(content);
