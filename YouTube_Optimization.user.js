@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         YouTube 优化
 // @description  自动设置 YouTube 视频分辨率、播放速度，添加网页全屏功能，整合到控制面板，支持自动隐藏与收起。
-// @version      1.0.10
+// @version      1.0.11
 // @match        *://www.youtube.com/*
 // @grant        GM_registerMenuCommand
 // @updateURL    https://ba.sh/A6Ms
@@ -35,6 +35,8 @@
     const STORAGE_KEY_SLIDER_VISIBLE = 'yt_home_slider_visible';
     const THEME_STORAGE_KEY = 'yt-theme-mode';
     const FLOAT_STYLE_KEY = 'yt-float-style';
+    const FLOAT_AUTO_COLLAPSE_KEY = 'yt-float-auto-collapse';
+    const FLOAT_AUTO_COLLAPSE_DELAY = 3000;
     const minColumns = 3;
     const maxColumns = 8;
 
@@ -1166,15 +1168,15 @@
         toggleBtn.title = '收起面板';
 
         let collapsed = false;
-        toggleBtn.onclick = () => {
-            collapsed = !collapsed;
+        function setCollapsed(state) {
+            collapsed = state;
             panel.style.display = collapsed ? 'none' : 'flex';
             toggleBtn.textContent = collapsed ? '◀' : '▶';
             toggleBtn.title = collapsed ? '展开面板' : '收起面板';
-
             rightControls.classList.toggle('yt-border-collapsed', collapsed);
             rightControls.style.padding = collapsed ? '0 4px' : '0 6px';
-        };
+        }
+        toggleBtn.onclick = () => setCollapsed(!collapsed);
 
         panel.appendChild(qualityLabel);
         panel.appendChild(qualitySelect);
@@ -1200,10 +1202,45 @@
             }, 3000);
         };
 
-        document.addEventListener('mousemove', show, { passive: true });
+        // 自动收纳悬浮条
+        let autoCollapseTimer = null;
+        function isMouseNearBar(x, y) {
+            const rect = container.getBoundingClientRect();
+            const margin = 60;
+            return x >= rect.left - margin && x <= rect.right + margin &&
+                   y >= rect.top - margin && y <= rect.bottom + margin;
+        }
+        function onAutoCollapse(e) {
+            if (localStorage.getItem(FLOAT_AUTO_COLLAPSE_KEY) !== 'true') {
+                if (autoCollapseTimer) { clearTimeout(autoCollapseTimer); autoCollapseTimer = null; }
+                return;
+            }
+            const x = e.clientX, y = e.clientY;
+            if (isMouseNearBar(x, y)) {
+                if (collapsed) setCollapsed(false);
+                if (autoCollapseTimer) { clearTimeout(autoCollapseTimer); autoCollapseTimer = null; }
+            } else {
+                if (!autoCollapseTimer) {
+                    autoCollapseTimer = setTimeout(() => {
+                        if (!collapsed) setCollapsed(true);
+                        autoCollapseTimer = null;
+                    }, FLOAT_AUTO_COLLAPSE_DELAY);
+                }
+            }
+        }
+
+        document.addEventListener('mousemove', (e) => { show(e); onAutoCollapse(e); }, { passive: true });
         document.addEventListener('keydown', show, { passive: true });
         show();
         applyFloatStyle();
+
+        // 初始化：若启用自动收纳则启动计时
+        if (localStorage.getItem(FLOAT_AUTO_COLLAPSE_KEY) === 'true') {
+            autoCollapseTimer = setTimeout(() => {
+                if (!collapsed) setCollapsed(true);
+                autoCollapseTimer = null;
+            }, FLOAT_AUTO_COLLAPSE_DELAY);
+        }
     }
 
     // 应用浮动条样式
@@ -1817,11 +1854,31 @@
                     floatContainer.appendChild(label);
                 });
 
+                // 自动收纳悬浮条
+                const autoCollapseLabel = document.createElement('label');
+                autoCollapseLabel.textContent = '自动收纳悬浮条 ';
+                autoCollapseLabel.style.cssText = 'display: flex; align-items: center; justify-content: space-between; margin-top: 12px;';
+
+                const autoCollapseSwitch = document.createElement('input');
+                autoCollapseSwitch.type = 'checkbox';
+                autoCollapseSwitch.checked = localStorage.getItem(FLOAT_AUTO_COLLAPSE_KEY) === 'true';
+                autoCollapseSwitch.addEventListener('change', () => {
+                    localStorage.setItem(FLOAT_AUTO_COLLAPSE_KEY, autoCollapseSwitch.checked);
+                });
+
+                autoCollapseLabel.appendChild(autoCollapseSwitch);
+
+                const autoCollapseNote = document.createElement('div');
+                autoCollapseNote.textContent = '鼠标离开悬浮条一段时间后自动折叠为按钮，鼠标靠近时自动展开。';
+                autoCollapseNote.style.cssText = 'font-size: 12px; color: #666; margin-bottom: 10px;';
+
                 scriptSection.appendChild(scriptTitle);
                 scriptSection.appendChild(themeLabel);
                 scriptSection.appendChild(themeContainer);
                 scriptSection.appendChild(floatLabel);
                 scriptSection.appendChild(floatContainer);
+                scriptSection.appendChild(autoCollapseLabel);
+                scriptSection.appendChild(autoCollapseNote);
                 content.appendChild(scriptSection);
 
                 // ===== YouTube 设置 =====
