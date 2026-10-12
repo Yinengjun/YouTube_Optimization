@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         YouTube 优化
 // @description  自动设置 YouTube 视频分辨率、播放速度，添加网页全屏功能，整合到控制面板，支持自动隐藏与收起。
-// @version      1.0.13
+// @version      1.0.14
 // @match        *://www.youtube.com/*
 // @grant        GM_registerMenuCommand
 // @updateURL    https://ba.sh/A6Ms
@@ -648,23 +648,29 @@
     }
 
     // 获取当前播放内容的直播状态：live=直播中 / upcoming=未开播（预约、首映）/ normal=普通视频
+    // 只信任播放器响应里的直播字段（yt-dlp 同款判据），不使用直播角标等 DOM 元素，避免普通视频误判
     function getLiveState() {
         const player = document.getElementById('movie_player');
-        if (player && typeof player.getVideoData === 'function') {
-            try {
-                const data = player.getVideoData();
-                if (data && data.isLive) return 'live';
-            } catch (e) { }
-        }
-        if (player && typeof player.getPlayerResponse === 'function') {
-            try {
-                const res = player.getPlayerResponse();
-                const micro = res && res.microformat && res.microformat.playerMicroformatRenderer;
-                if (micro && micro.liveBroadcastDetails && micro.liveBroadcastDetails.isLiveNow) return 'live';
-                if (res && res.upcomingEventData) return 'upcoming';
-            } catch (e) { }
-        }
-        if (document.querySelector('.html5-video-player .ytp-live-badge')) return 'live';
+        if (!player || typeof player.getPlayerResponse !== 'function') return 'normal';
+        try {
+            const res = player.getPlayerResponse();
+            if (!res) return 'normal';
+            const status = res.playabilityStatus || {};
+            const micro = res.microformat && res.microformat.playerMicroformatRenderer;
+            const liveDetails = micro && micro.liveBroadcastDetails;
+
+            // 正在直播（带 offlineSlate 表示尚未开播的首映/预约）
+            if (status.liveStreamability) {
+                const offline = status.liveStreamability.liveStreamabilityRenderer &&
+                                status.liveStreamability.liveStreamabilityRenderer.offlineSlate;
+                return offline ? 'upcoming' : 'live';
+            }
+            if (liveDetails) {
+                if (liveDetails.isLiveNow === true) return 'live';
+                if (!liveDetails.endTimestamp) return 'upcoming';
+            }
+            if (res.upcomingEventData) return 'upcoming';
+        } catch (e) { }
         return 'normal';
     }
 
