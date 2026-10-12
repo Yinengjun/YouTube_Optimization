@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         YouTube 优化
 // @description  自动设置 YouTube 视频分辨率、播放速度，添加网页全屏功能，整合到控制面板，支持自动隐藏与收起。
-// @version      1.0.12
+// @version      1.0.13
 // @match        *://www.youtube.com/*
 // @grant        GM_registerMenuCommand
 // @updateURL    https://ba.sh/A6Ms
@@ -364,6 +364,12 @@
     function setPlaybackSpeed(speed) {
         const video = document.querySelector('video');
         if (video) {
+            if (isLiveLocked() && getLiveState() !== 'normal') {
+                video.playbackRate = 1;
+                console.log('[YouTube脚本] 直播/预约内容，倍速锁定为 1x');
+                showYtToast('直播/预约内容不支持倍速播放，已保持 1 倍速');
+                return;
+            }
             video.playbackRate = speed;
             console.log(`[YouTube脚本] 倍速设置为：${speed}x`);
         }
@@ -641,6 +647,73 @@
         }
     }
 
+    // 获取当前播放内容的直播状态：live=直播中 / upcoming=未开播（预约、首映）/ normal=普通视频
+    function getLiveState() {
+        const player = document.getElementById('movie_player');
+        if (player && typeof player.getVideoData === 'function') {
+            try {
+                const data = player.getVideoData();
+                if (data && data.isLive) return 'live';
+            } catch (e) { }
+        }
+        if (player && typeof player.getPlayerResponse === 'function') {
+            try {
+                const res = player.getPlayerResponse();
+                const micro = res && res.microformat && res.microformat.playerMicroformatRenderer;
+                if (micro && micro.liveBroadcastDetails && micro.liveBroadcastDetails.isLiveNow) return 'live';
+                if (res && res.upcomingEventData) return 'upcoming';
+            } catch (e) { }
+        }
+        if (document.querySelector('.html5-video-player .ytp-live-badge')) return 'live';
+        return 'normal';
+    }
+
+    // 直播锁定 1 倍速是否开启（默认开）
+    function isLiveLocked() {
+        return localStorage.getItem('yt-live-one-x-speed') !== 'false';
+    }
+
+    // 应用直播页面1倍速
+    function applyLiveSpeed() {
+        if (!isLiveLocked()) return;
+        if (getLiveState() === 'normal') return;
+        const video = document.querySelector('video');
+        if (video && video.playbackRate !== 1) {
+            video.playbackRate = 1;
+            console.log('[YouTube脚本] 直播/预约内容已强制 1 倍速。');
+        }
+    }
+
+    // 观看页定期复查直播状态（覆盖预约转直播、首映开播等状态切换）
+    let _liveSpeedWatcher = null;
+    function setupLiveSpeedWatcher() {
+        if (_liveSpeedWatcher) clearInterval(_liveSpeedWatcher);
+        _liveSpeedWatcher = setInterval(() => {
+            if (isVideoPage()) applyLiveSpeed();
+        }, 3000);
+    }
+
+    // 显示脚本提示消息（短暂弹窗）
+    let _ytToastTimer = null;
+    function showYtToast(message) {
+        let toast = document.getElementById('yt-script-toast');
+        if (!toast) {
+            toast = document.createElement('div');
+            toast.id = 'yt-script-toast';
+            toast.style.cssText = `
+                position: fixed; left: 50%; bottom: 80px; transform: translateX(-50%);
+                background: rgba(0,0,0,0.8); color: #fff; padding: 10px 18px;
+                border-radius: 6px; font-size: 13px; z-index: 10001;
+                pointer-events: none; transition: opacity 0.3s; opacity: 0;
+            `;
+            document.body.appendChild(toast);
+        }
+        toast.textContent = message;
+        toast.style.opacity = '1';
+        clearTimeout(_ytToastTimer);
+        _ytToastTimer = setTimeout(() => { toast.style.opacity = '0'; }, 2000);
+    }
+
     // 设置视频结束监听器
     let _videoEndHandler = null;
     function setupVideoEndListener() {
@@ -767,6 +840,7 @@
     // 设置推荐过滤器
     function setupRecommendationFilter() {
         const getSettings = () => {
+            if (localStorage.getItem('yt-filter-enabled') !== 'true') return null;
             let keywords = [];
             try {
                 keywords = JSON.parse(localStorage.getItem('yt-filter-words') || '[]');
@@ -776,7 +850,6 @@
             return {
                 enabled: localStorage.getItem('yt-filter-enabled') === 'true',
                 filterHome: localStorage.getItem('yt-filter-home') === 'true',
-                filterRelated: localStorage.getItem('yt-filter-related') === 'true',
                 filterMembersOnly: localStorage.getItem('yt-filter-members-only') === 'true',
                 filterKeywords: localStorage.getItem('yt-filter-keywords') === 'true',
                 filterProgress: localStorage.getItem('yt-filter-progress') === 'true',
@@ -789,8 +862,6 @@
                 filterShortsShelf: localStorage.getItem('yt-filter-shorts-shelf') === 'true'
             };
         };
-
-        let hiddenCount = 0;
 
         // 关键词匹配函数（输入：视频标题和关键词数组）
         function containsKeyword(title, keywords) {
@@ -859,14 +930,13 @@
         // 过滤首页视频
         function filterHomeVideos() {
             const settings = getSettings();
-            if (!settings.enabled || (!settings.filterHome && !settings.filterPublishTimeEnabled && !settings.filterBrandVideoShelf && !settings.filterGameShelf && !settings.filterShortsShelf)) return;
+            if (!settings || (!settings.filterHome && !settings.filterPublishTimeEnabled && !settings.filterBrandVideoShelf && !settings.filterGameShelf && !settings.filterShortsShelf)) return;
 
             // 过滤专版会员视频推荐
             if (settings.filterBrandVideoShelf) {
                 document.querySelectorAll('ytd-brand-video-shelf-renderer:not([data-yt-filtered])').forEach(shelf => {
                     shelf.style.display = 'none';
                     shelf.setAttribute('data-yt-filtered', '1');
-                    hiddenCount++;
                 });
             }
 
@@ -876,7 +946,6 @@
                     if (shelf.querySelector('a[href="/playables"]')) {
                         shelf.style.display = 'none';
                         shelf.setAttribute('data-yt-filtered', '1');
-                        hiddenCount++;
                     }
                 });
             }
@@ -886,7 +955,6 @@
                 document.querySelectorAll('ytd-rich-shelf-renderer[is-shorts]:not([data-yt-filtered])').forEach(shelf => {
                     shelf.style.display = 'none';
                     shelf.setAttribute('data-yt-filtered', '1');
-                    hiddenCount++;
                 });
             }
 
@@ -944,8 +1012,6 @@
                     item.style.display = 'none';
                     // 标记为已过滤，避免重复处理
                     item.setAttribute('data-yt-filtered', '1');
-                    // 增加已隐藏的视频计数（假设 hiddenCount 是在作用域内定义的变量）
-                    hiddenCount++;
                 } else {
                     // 如果未匹配任何条件，也标记为已处理但未过滤
                     item.setAttribute('data-yt-filtered', '0');
@@ -954,13 +1020,23 @@
         }
 
         // 观察首页变化
+        let _filterRafId = null;
+        function scheduleFilterHomeVideos() {
+            if (_filterRafId !== null) return;
+            _filterRafId = requestAnimationFrame(() => {
+                _filterRafId = null;
+                filterHomeVideos();
+            });
+        }
         function observeHomePage() {
             const target = document.querySelector('ytd-page-manager');
             if (!target) return;
 
             if (window._ytFilterObserver) window._ytFilterObserver.disconnect();
 
-            const observer = new MutationObserver(() => filterHomeVideos());
+            if (window.location.pathname !== '/') return;
+
+            const observer = new MutationObserver(scheduleFilterHomeVideos);
             observer.observe(target, { childList: true, subtree: true });
             window._ytFilterObserver = observer;
 
@@ -972,6 +1048,7 @@
         // 预加载瀑布流：触发 YouTube 加载更多内容
         function preloadScroll() {
             if (localStorage.getItem('yt-preload-scroll') !== 'true') return;
+            if (window.location.pathname !== '/') return;
             const count = parseInt(localStorage.getItem('yt-preload-scroll-count')) || 3;
             let i = 0;
             const tick = () => {
@@ -1334,7 +1411,7 @@
             background: #f8f8f8;
         `;
 
-        const tabs = ['行为', '过滤', '界面', '统计面板', '快捷键', '导入导出'];
+        const tabs = ['行为', '过滤', '界面', '统计面板', '脚本'];
         const tabButtons = {};
         const tabContents = {};
 
@@ -1484,6 +1561,27 @@
                 shortsSpeedNote.textContent = '如果当前是 Shorts 视频，则始终强制设置为 1 倍速。';
                 shortsSpeedNote.style.cssText = 'font-size: 12px; color: #666; margin-bottom: 15px;';
 
+                // 直播/预约内容锁定 1 倍速 UI（默认开启）
+                const liveSpeedLabel = document.createElement('label');
+                liveSpeedLabel.textContent = '直播/预约锁定 1 倍速 ';
+                liveSpeedLabel.style.cssText = 'display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;';
+
+                const liveSpeedSwitch = document.createElement('input');
+                liveSpeedSwitch.type = 'checkbox';
+                liveSpeedSwitch.checked = localStorage.getItem('yt-live-one-x-speed') !== 'false';
+                liveSpeedSwitch.id = 'live-one-x-speed-switch';
+
+                liveSpeedSwitch.addEventListener('change', () => {
+                    localStorage.setItem('yt-live-one-x-speed', liveSpeedSwitch.checked);
+                    if (liveSpeedSwitch.checked) applyLiveSpeed();
+                });
+
+                liveSpeedLabel.appendChild(liveSpeedSwitch);
+
+                const liveSpeedNote = document.createElement('div');
+                liveSpeedNote.textContent = '直播或未开播的预约/首映内容强制 1 倍速，避免直播流加速后持续缓冲；倍速快捷键与悬浮条在直播时同样失效。';
+                liveSpeedNote.style.cssText = 'font-size: 12px; color: #666; margin-bottom: 15px;';
+
                 content.appendChild(awfLabel);
                 content.appendChild(awfNote);
                 content.appendChild(afqLabel);
@@ -1495,6 +1593,8 @@
                 content.appendChild(vqNote);
                 content.appendChild(shortsSpeedLabel);
                 content.appendChild(shortsSpeedNote);
+                content.appendChild(liveSpeedLabel);
+                content.appendChild(liveSpeedNote);
 
                 // 预加载瀑布流
                 const preloadLabel = document.createElement('label');
@@ -1769,120 +1869,6 @@
             }
 
             if (tab === '界面') {
-                // ===== 脚本设置 =====
-                const scriptSection = document.createElement('div');
-                scriptSection.style.marginBottom = '20px';
-                scriptSection.style.paddingBottom = '15px';
-                scriptSection.style.borderBottom = '1px solid #444';
-
-                const scriptTitle = document.createElement('div');
-                scriptTitle.textContent = '脚本';
-                scriptTitle.style.cssText = 'font-weight: bold; margin-bottom: 12px; font-size: 15px;';
-
-                // 深浅色模式
-                const themeMode = localStorage.getItem(THEME_STORAGE_KEY) || 'youtube';
-                const themeLabel = document.createElement('div');
-                themeLabel.textContent = '深浅色模式';
-                themeLabel.style.cssText = 'font-weight: bold; margin-bottom: 10px;';
-
-                const themeOptions = [
-                    { value: 'system', label: '系统' },
-                    { value: 'youtube', label: '同步YouTube' },
-                    { value: 'dark', label: '深色' },
-                    { value: 'light', label: '浅色' }
-                ];
-
-                const themeContainer = document.createElement('div');
-                themeContainer.style.cssText = 'display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 15px;';
-
-                themeOptions.forEach(opt => {
-                    const label = document.createElement('label');
-                    label.style.cssText = 'display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 13px;';
-
-                    const radio = document.createElement('input');
-                    radio.type = 'radio';
-                    radio.name = 'yt-theme-radio';
-                    radio.value = opt.value;
-                    radio.checked = themeMode === opt.value;
-
-                    radio.addEventListener('change', () => {
-                        if (radio.checked) {
-                            localStorage.setItem(THEME_STORAGE_KEY, opt.value);
-                            applyTheme();
-                            if (opt.value === 'system') {
-                                watchSystemTheme();
-                            }
-                        }
-                    });
-
-                    label.appendChild(radio);
-                    label.appendChild(document.createTextNode(opt.label));
-                    themeContainer.appendChild(label);
-                });
-
-                // 浮动条样式
-                const floatStyle = localStorage.getItem(FLOAT_STYLE_KEY) || 'full';
-                const floatLabel = document.createElement('div');
-                floatLabel.textContent = '浮动条样式';
-                floatLabel.style.cssText = 'font-weight: bold; margin-bottom: 10px;';
-
-                const floatContainer = document.createElement('div');
-                floatContainer.style.cssText = 'display: flex; flex-wrap: wrap; gap: 12px;';
-
-                const floatOptions = [
-                    { value: 'full', label: '完整' },
-                    { value: 'mini', label: '迷你' }
-                ];
-
-                floatOptions.forEach(opt => {
-                    const label = document.createElement('label');
-                    label.style.cssText = 'display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 13px;';
-
-                    const radio = document.createElement('input');
-                    radio.type = 'radio';
-                    radio.name = 'yt-float-radio';
-                    radio.value = opt.value;
-                    radio.checked = floatStyle === opt.value;
-
-                    radio.addEventListener('change', () => {
-                        if (radio.checked) {
-                            localStorage.setItem(FLOAT_STYLE_KEY, opt.value);
-                            applyFloatStyle();
-                        }
-                    });
-
-                    label.appendChild(radio);
-                    label.appendChild(document.createTextNode(opt.label));
-                    floatContainer.appendChild(label);
-                });
-
-                // 自动收纳悬浮条
-                const autoCollapseLabel = document.createElement('label');
-                autoCollapseLabel.textContent = '自动收纳悬浮条 ';
-                autoCollapseLabel.style.cssText = 'display: flex; align-items: center; justify-content: space-between; margin-top: 12px;';
-
-                const autoCollapseSwitch = document.createElement('input');
-                autoCollapseSwitch.type = 'checkbox';
-                autoCollapseSwitch.checked = localStorage.getItem(FLOAT_AUTO_COLLAPSE_KEY) === 'true';
-                autoCollapseSwitch.addEventListener('change', () => {
-                    localStorage.setItem(FLOAT_AUTO_COLLAPSE_KEY, autoCollapseSwitch.checked);
-                });
-
-                autoCollapseLabel.appendChild(autoCollapseSwitch);
-
-                const autoCollapseNote = document.createElement('div');
-                autoCollapseNote.textContent = '鼠标离开悬浮条一段时间后自动折叠为按钮，鼠标靠近时自动展开。';
-                autoCollapseNote.style.cssText = 'font-size: 12px; color: #666; margin-bottom: 10px;';
-
-                scriptSection.appendChild(scriptTitle);
-                scriptSection.appendChild(themeLabel);
-                scriptSection.appendChild(themeContainer);
-                scriptSection.appendChild(floatLabel);
-                scriptSection.appendChild(floatContainer);
-                scriptSection.appendChild(autoCollapseLabel);
-                scriptSection.appendChild(autoCollapseNote);
-                content.appendChild(scriptSection);
-
                 // ===== YouTube 设置 =====
                 const ytSection = document.createElement('div');
 
@@ -2138,108 +2124,133 @@
                 });
             }
 
-            if (tab === '快捷键') {
-                const hotkeySettings = document.createElement('div');
-                hotkeySettings.style.display = 'flex';
-                hotkeySettings.style.flexDirection = 'column';
-                hotkeySettings.style.gap = '12px';
+            if (tab === '脚本') {
+                content.style.maxHeight = '60vh';
+                content.style.overflowY = 'auto';
 
-                const hotkeyOptions = [
-                    {
-                        key: 'webfullscreen',
-                        label: '切换网页全屏',
-                        defaultKey: 'w',
-                        note: '建议使用 W 键'
-                    },
-                    {
-                        key: 'open-settings',
-                        label: '打开设置面板',
-                        defaultKey: 's',
-                        note: '使用 Ctrl+Shift+S 触发'
-                    },
-                    {
-                        key: 'increase-speed',
-                        label: '播放速度切换（1x/2x/4x）',
-                        defaultKey: 'x',
-                        note: '循环加速'
-                    },
-                    {
-                        key: 'toggle-subtitle',
-                        label: '开关字幕',
-                        defaultKey: 'c',
-                        note: '字幕按钮快捷开关'
-                    },
-                    {
-                        key: 'show-stats',
-                        label: '显示详细统计信息',
-                        defaultKey: 'd',
-                        note: '开关“详细统计信息”面板'
-                    },
-                    {
-                    key: 'go-home',
-                    label: '返回首页',
-                    defaultKey: 'h',
-                    note: '快捷键切换到首页'
-                    },
-                    {
-                        key: 'rotate-video',
-                        label: '视频翻转',
-                        defaultKey: 'r',
-                        note: '每次顺时针旋转 90°'
-                    }
+                // ===== 顶部两列：脚本界面设置 + 导入导出 =====
+                const topGrid = document.createElement('div');
+                topGrid.style.cssText = 'display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start;';
+
+                // 左列：脚本界面设置
+                const scriptSection = document.createElement('div');
+
+                const scriptTitle = document.createElement('div');
+                scriptTitle.textContent = '脚本界面';
+                scriptTitle.style.cssText = 'font-weight: bold; margin-bottom: 12px; font-size: 15px; padding-bottom: 8px; border-bottom: 1px solid var(--yt-border, #444);';
+                scriptSection.appendChild(scriptTitle);
+
+                // 深浅色模式
+                const themeMode = localStorage.getItem(THEME_STORAGE_KEY) || 'youtube';
+                const themeLabel = document.createElement('div');
+                themeLabel.textContent = '深浅色模式';
+                themeLabel.style.cssText = 'font-weight: bold; margin-bottom: 8px;';
+
+                const themeOptions = [
+                    { value: 'system', label: '系统' },
+                    { value: 'youtube', label: '同步YouTube' },
+                    { value: 'dark', label: '深色' },
+                    { value: 'light', label: '浅色' }
                 ];
 
-                hotkeyOptions.forEach(opt => {
-                    const row = document.createElement('div');
-                    row.style.cssText = 'display: flex; align-items: center; gap: 10px;';
+                const themeContainer = document.createElement('div');
+                themeContainer.style.cssText = 'display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 15px;';
 
-                    const enable = document.createElement('input');
-                    enable.type = 'checkbox';
-                    enable.checked = localStorage.getItem(`yt-hotkey-toggle-${opt.key}`) === 'true';
-                    enable.addEventListener('change', () => {
-                        localStorage.setItem(`yt-hotkey-toggle-${opt.key}`, enable.checked);
-                    });
-
+                themeOptions.forEach(opt => {
                     const label = document.createElement('label');
-                    label.textContent = opt.label;
-                    label.style.flex = '1';
+                    label.style.cssText = 'display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 13px;';
 
-                    const input = document.createElement('input');
-                    input.type = 'text';
-                    input.maxLength = 1;
-                    input.style.cssText = 'width: 30px; text-align: center;';
-                    input.value = localStorage.getItem(`yt-hotkey-key-${opt.key}`) || opt.defaultKey;
+                    const radio = document.createElement('input');
+                    radio.type = 'radio';
+                    radio.name = 'yt-theme-radio';
+                    radio.value = opt.value;
+                    radio.checked = themeMode === opt.value;
 
-                    input.addEventListener('input', () => {
-                        const val = input.value.toLowerCase().trim();
-                        if (/^[a-z]$/.test(val)) {
-                            localStorage.setItem(`yt-hotkey-key-${opt.key}`, val);
-                        } else {
-                            input.value = '';
-                            localStorage.removeItem(`yt-hotkey-key-${opt.key}`);
+                    radio.addEventListener('change', () => {
+                        if (radio.checked) {
+                            localStorage.setItem(THEME_STORAGE_KEY, opt.value);
+                            applyTheme();
+                            if (opt.value === 'system') {
+                                watchSystemTheme();
+                            }
                         }
                     });
 
-                    const note = document.createElement('span');
-                    note.textContent = opt.note;
-                    note.style.fontSize = '12px';
-                    note.style.color = '#888';
-
-                    row.appendChild(enable);
-                    row.appendChild(label);
-                    row.appendChild(input);
-                    hotkeySettings.appendChild(row);
-                    hotkeySettings.appendChild(note);
+                    label.appendChild(radio);
+                    label.appendChild(document.createTextNode(opt.label));
+                    themeContainer.appendChild(label);
                 });
 
-                content.appendChild(hotkeySettings);
-            }
+                scriptSection.appendChild(themeLabel);
+                scriptSection.appendChild(themeContainer);
 
-            if (tab === '导入导出') {
+                // 浮动条样式
+                const floatStyle = localStorage.getItem(FLOAT_STYLE_KEY) || 'full';
+                const floatLabel = document.createElement('div');
+                floatLabel.textContent = '浮动条样式';
+                floatLabel.style.cssText = 'font-weight: bold; margin-bottom: 8px;';
+
+                const floatContainer = document.createElement('div');
+                floatContainer.style.cssText = 'display: flex; flex-wrap: wrap; gap: 12px;';
+
+                const floatOptions = [
+                    { value: 'full', label: '完整' },
+                    { value: 'mini', label: '迷你' }
+                ];
+
+                floatOptions.forEach(opt => {
+                    const label = document.createElement('label');
+                    label.style.cssText = 'display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 13px;';
+
+                    const radio = document.createElement('input');
+                    radio.type = 'radio';
+                    radio.name = 'yt-float-radio';
+                    radio.value = opt.value;
+                    radio.checked = floatStyle === opt.value;
+
+                    radio.addEventListener('change', () => {
+                        if (radio.checked) {
+                            localStorage.setItem(FLOAT_STYLE_KEY, opt.value);
+                            applyFloatStyle();
+                        }
+                    });
+
+                    label.appendChild(radio);
+                    label.appendChild(document.createTextNode(opt.label));
+                    floatContainer.appendChild(label);
+                });
+
+                scriptSection.appendChild(floatLabel);
+                scriptSection.appendChild(floatContainer);
+
+                // 自动收纳悬浮条
+                const autoCollapseLabel = document.createElement('label');
+                autoCollapseLabel.textContent = '自动收纳悬浮条 ';
+                autoCollapseLabel.style.cssText = 'display: flex; align-items: center; justify-content: space-between; margin-top: 12px;';
+
+                const autoCollapseSwitch = document.createElement('input');
+                autoCollapseSwitch.type = 'checkbox';
+                autoCollapseSwitch.checked = localStorage.getItem(FLOAT_AUTO_COLLAPSE_KEY) === 'true';
+                autoCollapseSwitch.addEventListener('change', () => {
+                    localStorage.setItem(FLOAT_AUTO_COLLAPSE_KEY, autoCollapseSwitch.checked);
+                });
+
+                autoCollapseLabel.appendChild(autoCollapseSwitch);
+
+                const autoCollapseNote = document.createElement('div');
+                autoCollapseNote.textContent = '鼠标离开悬浮条一段时间后自动折叠为按钮，鼠标靠近时自动展开。';
+                autoCollapseNote.style.cssText = 'font-size: 12px; color: #666; margin-top: 4px;';
+
+                scriptSection.appendChild(autoCollapseLabel);
+                scriptSection.appendChild(autoCollapseNote);
+
+                // 右列：导入导出
                 const ieSection = document.createElement('div');
-                ieSection.style.display = 'flex';
-                ieSection.style.flexDirection = 'column';
-                ieSection.style.gap = '12px';
+
+                const ieTitle = document.createElement('div');
+                ieTitle.textContent = '导入导出';
+                ieTitle.style.cssText = 'font-weight: bold; margin-bottom: 12px; font-size: 15px; padding-bottom: 8px; border-bottom: 1px solid var(--yt-border, #444);';
+                ieSection.appendChild(ieTitle);
 
                 const exportLabel = document.createElement('label');
                 exportLabel.textContent = '导出设置';
@@ -2327,7 +2338,110 @@
                 ieSection.appendChild(importInput);
                 ieSection.appendChild(importBtn);
 
-                content.appendChild(ieSection);
+                topGrid.appendChild(scriptSection);
+                topGrid.appendChild(ieSection);
+                content.appendChild(topGrid);
+
+                // ===== 快捷键（两列网格） =====
+                const hotkeyTitle = document.createElement('div');
+                hotkeyTitle.textContent = '快捷键';
+                hotkeyTitle.style.cssText = 'font-weight: bold; margin: 16px 0 12px; font-size: 15px; padding-top: 12px; padding-bottom: 8px; border-top: 1px solid var(--yt-border, #444); border-bottom: 1px solid var(--yt-border, #444);';
+                content.appendChild(hotkeyTitle);
+
+                const hotkeySettings = document.createElement('div');
+                hotkeySettings.style.cssText = 'display: grid; grid-template-columns: 1fr 1fr; gap: 10px 20px;';
+
+                const hotkeyOptions = [
+                    {
+                        key: 'webfullscreen',
+                        label: '切换网页全屏',
+                        defaultKey: 'w',
+                        note: '建议使用 W 键'
+                    },
+                    {
+                        key: 'open-settings',
+                        label: '打开设置面板',
+                        defaultKey: 's',
+                        note: '使用 Ctrl+Shift+S 触发'
+                    },
+                    {
+                        key: 'increase-speed',
+                        label: '播放速度切换（1x/2x/4x）',
+                        defaultKey: 'x',
+                        note: '循环加速'
+                    },
+                    {
+                        key: 'toggle-subtitle',
+                        label: '开关字幕',
+                        defaultKey: 'c',
+                        note: '字幕按钮快捷开关'
+                    },
+                    {
+                        key: 'show-stats',
+                        label: '显示详细统计信息',
+                        defaultKey: 'd',
+                        note: '开关“详细统计信息”面板'
+                    },
+                    {
+                        key: 'go-home',
+                        label: '返回首页',
+                        defaultKey: 'h',
+                        note: '快捷键切换到首页'
+                    },
+                    {
+                        key: 'rotate-video',
+                        label: '视频翻转',
+                        defaultKey: 'r',
+                        note: '每次顺时针旋转 90°'
+                    }
+                ];
+
+                hotkeyOptions.forEach(opt => {
+                    const cell = document.createElement('div');
+
+                    const row = document.createElement('div');
+                    row.style.cssText = 'display: flex; align-items: center; gap: 10px;';
+
+                    const enable = document.createElement('input');
+                    enable.type = 'checkbox';
+                    enable.checked = localStorage.getItem(`yt-hotkey-toggle-${opt.key}`) === 'true';
+                    enable.addEventListener('change', () => {
+                        localStorage.setItem(`yt-hotkey-toggle-${opt.key}`, enable.checked);
+                    });
+
+                    const label = document.createElement('label');
+                    label.textContent = opt.label;
+                    label.style.flex = '1';
+
+                    const input = document.createElement('input');
+                    input.type = 'text';
+                    input.maxLength = 1;
+                    input.style.cssText = 'width: 30px; text-align: center;';
+                    input.value = localStorage.getItem(`yt-hotkey-key-${opt.key}`) || opt.defaultKey;
+
+                    input.addEventListener('input', () => {
+                        const val = input.value.toLowerCase().trim();
+                        if (/^[a-z]$/.test(val)) {
+                            localStorage.setItem(`yt-hotkey-key-${opt.key}`, val);
+                        } else {
+                            input.value = '';
+                            localStorage.removeItem(`yt-hotkey-key-${opt.key}`);
+                        }
+                    });
+
+                    const note = document.createElement('div');
+                    note.textContent = opt.note;
+                    note.style.cssText = 'font-size: 12px; color: #888; margin-top: 2px; padding-left: 24px;';
+
+                    row.appendChild(enable);
+                    row.appendChild(label);
+                    row.appendChild(input);
+                    cell.appendChild(row);
+                    cell.appendChild(note);
+                    hotkeySettings.appendChild(cell);
+                });
+
+                content.appendChild(hotkeySettings);
             }
 
             dialog.appendChild(content);
@@ -2360,6 +2474,9 @@
         setupFullscreenQualitySwitcher();
         // 设置 Shorts 视频速度
         applyShortsSpeed();
+        // 直播/预约内容锁定 1 倍速
+        applyLiveSpeed();
+        setupLiveSpeedWatcher();
         // 增强详细统计信息面板（汉化 / 显隐 / 单位换算）
         setupStatsEnhancer();
         // 视频页自动开启统计面板（默认关闭）
@@ -2480,6 +2597,11 @@
                 action: () => {
                     const video = document.querySelector('video');
                     if (video) {
+                        if (isLiveLocked() && getLiveState() !== 'normal') {
+                            showYtToast('直播/预约内容不支持倍速播放，已保持 1 倍速');
+                            video.playbackRate = 1;
+                            return;
+                        }
                         const current = video.playbackRate;
                         const next = current >= 4 ? 1 : current * 2;
                         video.playbackRate = next;
@@ -2529,6 +2651,9 @@
                 }
             }
         ];
+
+        const target = e.target;
+        if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
 
         hotkeyActions.forEach(({ key, defaultKey, action }) => {
             const enabled = localStorage.getItem(`yt-hotkey-toggle-${key}`) === 'true';
